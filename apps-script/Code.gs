@@ -15,6 +15,7 @@
  *   setupFolders()     re-create missing segment/type folders after editing the config tabs
  *   weeklyBackup()     run a backup now (it also runs by itself every week)
  *   checkSetup()       prints users, their roles and permissions to the log, to verify config
+ *   syncSources()      reads the company sheets now (it also runs by itself every hour)
  */
 
 // ───────────────────────────── First-run seed data ─────────────────────────────
@@ -152,6 +153,26 @@ const SEED = {
           'To restore a report, delete its row here.',
     rows: [],
   },
+  'Data Sources': {
+    headers: ['source_id', 'name', 'file_id', 'tabs', 'parser', 'roles', 'active', 'notes', 'last_sync', 'last_result'],
+    widths: [110, 200, 300, 300, 80, 240, 70, 260, 150, 260],
+    note: 'Company sheets the OA reads every hour (syncSources). tabs = pattern of tab names. parser = table or schedule. ' +
+          'roles = role_ids that may see this source in search and calendar (admin always can). last_sync / last_result are written by the system.',
+    rows: [
+      ['SCHED', 'K.E Schedule – monthly calendar', '1GAMJ-48KE1d-LWktGPG8i_RXiywHOcDXWnWidrrI9hY',
+       '^(January|February|March|April|May|June|July|August|September|October|November|December)$', 'schedule',
+       'admin,manager,office,technician', true, 'Technicians see this one', '', ''],
+      ['SCHED_TRACK', 'K.E Schedule – trackers', '1GAMJ-48KE1d-LWktGPG8i_RXiywHOcDXWnWidrrI9hY',
+       '^(RepairsLeadTo Do list|New Installation-Modernization)$', 'table', 'admin,manager,office', true, '', '', ''],
+      ['MAINT', 'Maintenance Record', '1RflhAV5qhghDGzI6HIUgyJE8TO1ba-6a',
+       'Maintenance-(Commercial|Residential)', 'table', 'admin,manager,office', true, 'Excel file: needs the Drive API service', '', ''],
+      ['INVOICES', 'Overdue invoices', '1RflhAV5qhghDGzI6HIUgyJE8TO1ba-6a', '^Overdue Invoices$', 'table',
+       'admin,manager,office', true, '', '', ''],
+      ['TRACKER', 'Project tracker', '1eRPFFA_s5HmVAoA6W9cOASB-GKGkGIHd',
+       '^(Quote & Lead follow up|Repair & Service Call|Project follow up|Install Schedule)$', 'table',
+       'admin,manager,office', true, 'Excel file: needs the Drive API service', '', ''],
+    ],
+  },
   'Audit Log': {
     headers: ['time', 'email', 'action', 'target', 'detail'],
     widths: [150, 220, 160, 180, 460], rows: [],
@@ -182,6 +203,8 @@ const README = [
   ['取消权限', 'Users 里 active 改成 FALSE，不要删行。'],
   ['Records are append-only', 'Service Reports and Audit Log are never edited. A correction is a new report whose amends_report_id = the original report_id.'],
   ['记录只增不改', '维修报告和审计日志不修改。更正 = 新增一条报告，amends_report_id 填原报告编号。'],
+  ['Company sheets', 'Data Sources lists the team\'s own sheets. The OA reads them every hour; staff keep working in them as before. roles = who may see each one.'],
+  ['公司表格', 'Data Sources 分页列出团队自己的表格。OA 每小时读取一次，大家照常在原表格工作。roles 决定谁能看到。'],
   ['Deleting a report', 'People with report.delete delete from the OA with a reason; it is listed in Report Deletions and hidden. Remove that row to restore it.'],
   ['删除报告', '有 report.delete 权限的人在 OA 里删除并写原因，记录在 Report Deletions 分页，OA 里不再显示。删掉那一行即可恢复。'],
   ['Backups', 'Every week (Settings: BACKUP_WEEKDAY / BACKUP_HOUR) a copy of this sheet goes to Backups/Weekly. Copies older than BACKUP_RETENTION_DAYS go to Drive trash (recoverable for 30 days).'],
@@ -201,6 +224,7 @@ function setup() {
   ss.setSpreadsheetTimeZone(s.TIMEZONE || 'America/Toronto');
   const folders = setupFolders();
   installBackupTrigger_();
+  installSyncTrigger_();
   protectAllTabs_(ss);
   audit_(Session.getEffectiveUser().getEmail(), 'setup', ss.getName(),
          'Tabs checked; folders ensured: ' + folders.length + '; weekly backup trigger installed');
@@ -717,6 +741,7 @@ const ACTIONS = {
         units: readTable_('Units'),
         projects: readTable_('Projects'),
         reports: visibleReports_(),
+        indexVersion: PropertiesService.getScriptProperties().getProperty('INDEX_VERSION') || '',
         syncedAt: new Date().toISOString(),
       };
     },
@@ -728,6 +753,20 @@ const ACTIONS = {
   createReport: {
     permission: 'report.create',
     run: function (user, p) { return createReport_(user, p); },
+  },
+  searchIndex: {
+    // Rows from the company sheets, only from the sources this person's roles may see.
+    permission: 'view.all',
+    run: function (user) {
+      const allowed = visibleSourceIds_(user);
+      const idx = loadIndex_();
+      return {
+        version: idx.version,
+        sources: readTable_('Data Sources').filter(function (x) { return allowed.indexOf(String(x.source_id)) >= 0; })
+          .map(function (x) { return { id: x.source_id, name: x.name, lastSync: x.last_sync }; }),
+        items: idx.items.filter(function (it) { return allowed.indexOf(it.src) >= 0; }),
+      };
+    },
   },
   deleteReport: {
     permission: 'report.delete',
@@ -767,6 +806,345 @@ function checkSetup() {
   });
   const triggers = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'weeklyBackup'; });
   lines.push(triggers.length ? '✓ weekly backup trigger installed' : '✗ weekly backup trigger missing – run setup()');
+  const sync = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'syncSources'; });
+  lines.push(sync.length ? '✓ hourly sync of company sheets installed' : '✗ hourly sync missing – run setup()');
+  lines.push(typeof Drive === 'undefined' ? '✗ Drive API service is off – needed to read the Excel files' : '✓ Drive API service is on');
+  readTable_('Data Sources').forEach(function (d) {
+    try { lines.push('✓ source ' + d.source_id + ' → ' + DriveApp.getFileById(String(d.file_id)).getName() + (d.last_result ? ' · last: ' + d.last_result : '')); }
+    catch (err) { lines.push('✗ source ' + d.source_id + ' cannot be opened: ' + err.message); }
+  });
   Logger.log(lines.join('\n'));
   return lines;
+}
+
+// ───────────────────────────── Company sheets → search index (step 3) ─────────────────────────────
+// The team keeps working in their own Google Sheets / Excel files. Every hour syncSources() reads the
+// sources listed in the "Data Sources" tab, turns every useful row into a search item, and saves one
+// index file in the private system folder. Who may see which source is set in Data Sources.roles.
+
+const INDEX_FILE_NAME = 'oa-search-index.json';
+const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september',
+                'october', 'november', 'december'];
+
+// Words that follow a number but are not street names ("3 weeks", "9 am", "2 stops" …).
+const NOT_STREET = ['am', 'pm', 'weeks', 'week', 'days', 'day', 'stops', 'stop', 'floors', 'floor', 'cars', 'car',
+  'hours', 'hrs', 'hr', 'years', 'year', 'months', 'month', 'units', 'unit', 'sets', 'set', 'crew', 'crews',
+  'and', 'the', 'for', 'to', 'of', 'min', 'mins', 'ext', 'locks', 'lock', 'sec', 'phones', 'photos', 'invoice',
+  'invoices', 'yes', 'no', 'jan', 'feb', 'mar', 'apr', 'jun', 'jul', 'aug', 'sep', 'sept', 'oct', 'nov', 'dec',
+  'january', 'february', 'march', 'april', 'june', 'july', 'august', 'september', 'october', 'november', 'december',
+  'th', 'nd', 'rd', 'st', 'person', 'people', 'pcs', 'pc', 'ft', 'feet', 'mm', 'lbs', 'kg', 'fpm', 'hp', 'v'];
+
+function cellText_(v) {
+  if (v === null || v === undefined) return '';
+  if (v instanceof Date) return isNaN(v) ? '' : Utilities.formatDate(v, 'America/Toronto', 'yyyy-MM-dd');
+  return String(v).replace(/\r/g, '').trim();
+}
+
+/** "165 Division St Unit 107 Cobourg" → "165 divi". Same building, different spellings → same key. */
+function addrKey_(text) {
+  const s = String(text || '').replace(/_/g, ' ')
+    .replace(/\d{4}-\d{2}-\d{2}/g, ' ')                       // ISO dates
+    .replace(/\b\d{1,2}([:.]\d{2})?\s*(am|pm)\b/gi, ' ')      // 9am, 9:00 am, 7.00 pm
+    .replace(/\d{1,2}:\d{2}/g, ' ')
+    .replace(/[#$]\s*\d+/g, ' ');
+  const re = /(?:^|[^\d\w])(\d{1,5})[a-z]?[ \t]*[-,]?[ \t]+([A-Za-z][A-Za-z'.]*)(?:[ \t]+([A-Za-z][A-Za-z'.]*))?/gi;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    let word = m[2].replace(/[.']/g, '').toLowerCase();
+    if (/^(st|saint|mt|mount|ste)$/.test(word) && m[3]) word = word.slice(0, 2) + m[3].replace(/[.']/g, '').toLowerCase();
+    if (word.length < 3 || NOT_STREET.indexOf(word) >= 0) continue;
+    return m[1] + ' ' + word.slice(0, 4);
+  }
+  return '';
+}
+
+const LABEL_RE = /\b(address|installation\s*#|name|cell|office|email|e|site\s*contact|contact|brand|#\s*of\s*stops|front-rear\s*door|expe?i?ry\s*date|type|term|customer|phone|backup\s*contact)\s*:/gi;
+
+/** Contacts found anywhere in a block of text. */
+function extractContacts_(text) {
+  const t = String(text || '');
+  const emails = (t.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g) || []).map(function (e) { return e.toLowerCase(); });
+  const phones = [];
+  (t.match(/(\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/g) || []).forEach(function (p) {
+    const d = p.replace(/\D/g, '').replace(/^1(?=\d{10}$)/, '');
+    if (d.length === 10 && phones.indexOf(d) < 0) phones.push(d);
+  });
+  const people = [];
+  const nameRe = /(?:^|\n|\s)(?:name|site\s*contact|contact|customer|backup\s*contact)\s*:\s*([^\n:]{2,60}?)(?=\s*(?:\n|cell|office|email|phone|$|\d{3}))/gi;
+  let m;
+  while ((m = nameRe.exec(t)) !== null) {
+    const n = m[1].replace(/[_]+/g, '').replace(/\s+/g, ' ').trim();
+    if (n && !/^[\W\d]*$/.test(n) && people.indexOf(n) < 0) people.push(n);
+  }
+  return { emails: unique_(emails), phones: phones, people: people };
+}
+function unique_(a) { return a.filter(function (x, i) { return x && a.indexOf(x) === i; }); }
+
+/** True if a block only holds empty template labels ("Address: Installation #: Name: …"). */
+function isTemplate_(text) {
+  const rest = String(text || '').replace(LABEL_RE, ' ').replace(/WK\s*\d/gi, ' ').replace(/[_\s\/,.:-]+/g, ' ').trim();
+  return rest.replace(/[^A-Za-z0-9]/g, '').length < 4;
+}
+
+function firstDate_(row) {
+  for (let i = 0; i < row.length; i++) {
+    const v = row[i];
+    if (v instanceof Date && !isNaN(v) && v.getFullYear() > 2015 && v.getFullYear() < 2100) return v;
+  }
+  for (let i = 0; i < row.length; i++) {
+    const m = /^(\d{1,2})\/(\d{1,2})\/(20\d{2})$/.exec(cellText_(row[i]));
+    if (m) { // these sheets write day/month/year
+      const d = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+      if (!isNaN(d) && Number(m[2]) <= 12) return d;
+    }
+  }
+  return null;
+}
+
+function makeItem_(ctx, row, fields) {
+  const text = fields.text.replace(/\n{2,}/g, '\n').slice(0, 900);
+  const c = extractContacts_(fields.raw || text);
+  return {
+    id: ctx.source.source_id + ':' + ctx.tab + ':' + row + (fields.suffix || ''),
+    src: ctx.source.source_id,
+    kind: fields.kind || ctx.source.name,
+    tab: ctx.tab,
+    title: fields.title.slice(0, 160),
+    addr: (fields.addr || '').slice(0, 160),
+    key: addrKey_(fields.addr || '') || addrKey_(fields.title) || addrKey_(text),
+    text: text,
+    people: c.people, phones: c.phones, emails: c.emails,
+    date: fields.date ? Utilities.formatDate(fields.date, 'America/Toronto', 'yyyy-MM-dd') : '',
+    person: fields.person || '',
+    url: ctx.rowUrl(row),
+  };
+}
+
+const HEADER_HINT = /(location|address|contact|customer|project|job\s*#|docket|scope|name|ref\s*#|item|memo|amount|status)/i;
+
+/** Rows of a normal tracker table: header row, then one record per row. Handles several sub-tables per tab. */
+function parseTable_(values, ctx) {
+  const items = [];
+  let headers = null;
+  let section = '';
+  for (let r = 0; r < values.length; r++) {
+    const row = values[r];
+    const cells = row.map(cellText_);
+    const filled = cells.filter(String);
+    if (!filled.length) continue;
+    const hintCount = cells.filter(function (c) { return c.length < 45 && HEADER_HINT.test(c); }).length;
+    if (filled.length >= 3 && hintCount >= 2 && !cells.some(function (c) { return /@|\d{3}[\s.-]\d{3}/.test(c); })) {
+      headers = cells.map(function (h) { return h.replace(/\s+/g, ' '); });
+      continue;
+    }
+    if (filled.length === 1 && filled[0].length < 60 && /(commercial|residential|quarterly|annual|monthly|inactive|tracker)/i.test(filled[0])) {
+      section = filled[0]; continue;
+    }
+    if (!headers) continue;
+    if (/total\s+year\s+value|new function|old function/i.test(cells.join(' '))) continue;
+    const joined = cells.map(function (c, i) {
+      return c ? ((headers[i] && headers[i].length < 40 ? headers[i] + ': ' : '') + c) : '';
+    }).filter(String).join('\n');
+    if (isTemplate_(cells.join(' '))) continue;
+    const col = function (re) {
+      for (let i = 0; i < headers.length; i++) if (re.test(headers[i]) && cells[i]) return cells[i];
+      return '';
+    };
+    let addr = col(/location|address/i);
+    const am = /address\s*:\s*([^\n]+)/i.exec(addr);
+    if (am) addr = am[1].trim();
+    if (!addr) addr = col(/job\s*#?_?\s*address/i);
+    let title = col(/job\s*#|name|docket|ref\s*#|scope|customer/i) || addr || filled[0];
+    title = title.replace(/\s+/g, ' ');
+    items.push(makeItem_(ctx, r + 1, {
+      kind: ctx.tab + (section && section !== ctx.tab ? ' · ' + section.replace(/:$/, '') : ''),
+      title: title, addr: addr || (addrKey_(title) ? title : ''),
+      text: joined, raw: cells.join('\n'), date: firstDate_(row),
+    }));
+  }
+  return items;
+}
+
+/** Monthly schedule grid: technicians down the side, working days across, plus the monthly maintenance lists. */
+function parseSchedule_(values, ctx) {
+  const items = [];
+  const monthIdx = MONTHS.indexOf(ctx.tab.trim().toLowerCase());
+  if (monthIdx < 0) return items;
+  const ym = /(20\d{2})/.exec(ctx.title);
+  const year = ym ? Number(ym[1]) : new Date().getFullYear();
+
+  // 1. Find the row of weekday names, then the row of day numbers under it.
+  let dayRow = -1;
+  for (let r = 0; r < Math.min(values.length, 15); r++) {
+    const n = values[r].filter(function (c) { return /^(mon|tue|wed|thu|fri|sat|sun)/i.test(cellText_(c)); }).length;
+    if (n >= 5) { dayRow = r; break; }
+  }
+  if (dayRow < 0) return items;
+  const dateByCol = {};
+  values[dayRow + 1].forEach(function (c, i) {
+    const d = Number(cellText_(c));
+    if (d >= 1 && d <= 31) dateByCol[i] = new Date(year, monthIdx, d);
+  });
+
+  // 2. Grid entries until the "maintenance to be done" block.
+  let person = '';
+  let r = dayRow + 2;
+  for (; r < values.length; r++) {
+    const row = values[r];
+    const joined = row.map(cellText_).join(' ');
+    if (/to be done/i.test(joined)) break;
+    const label = cellText_(row[0]);
+    if (label) person = label.replace(/\s+/g, ' ').trim();
+    Object.keys(dateByCol).forEach(function (c) {
+      const t = cellText_(row[c]);
+      if (!t || !person || /^(office|off|holiday|vacation)\b[\s\d.]*$/i.test(t)) return;
+      items.push(makeItem_(ctx, r + 1, {
+        kind: 'Schedule', suffix: ':' + c, person: person, date: dateByCol[c],
+        title: t.split('\n')[0].replace(/\s+/g, ' '), addr: '', text: t,
+      }));
+    });
+  }
+
+  // 3. Maintenance-to-do lists: blocks with LOCATION / CONTACT / NOTE columns side by side.
+  const titleRow = r < values.length ? values[r] : null;
+  let headerRow = -1;
+  for (let k = r; k < Math.min(values.length, r + 5); k++) {
+    if (values[k].some(function (c) { return /^location$/i.test(cellText_(c)); })) { headerRow = k; break; }
+  }
+  if (headerRow < 0) return items;
+  const groups = [];
+  values[headerRow].forEach(function (c, i) {
+    if (!/^location$/i.test(cellText_(c))) return;
+    let label = '';
+    if (titleRow) for (let j = i; j >= 0 && !label; j--) { const t = cellText_(titleRow[j]); if (/maintenance/i.test(t)) label = t; }
+    groups.push({ col: i, label: label.replace(/\(.*?\)/g, '').replace(/[\s:]+$/, '').trim() || 'Maintenance to be done' });
+  });
+  const monthName = MONTHS[monthIdx].charAt(0).toUpperCase() + MONTHS[monthIdx].slice(1);
+  let freq = {};
+  for (let k = headerRow + 1; k < values.length; k++) {
+    const row = values[k];
+    groups.forEach(function (g) {
+      const f = cellText_(row[g.col - 1]);
+      if (f && /annual|quarter|month/i.test(f)) freq[g.col] = f;
+      const loc = cellText_(row[g.col]);
+      if (!loc || isTemplate_(loc)) return;
+      const parts = [loc, cellText_(row[g.col + 1]), cellText_(row[g.col + 2]), cellText_(row[g.col + 3])].filter(String);
+      const am = /address\s*:\s*([^\n]+)/i.exec(loc);
+      const addr = am ? am[1].trim() : loc.split('\n')[0].trim();
+      items.push(makeItem_(ctx, k + 1, {
+        kind: g.label + (freq[g.col] ? ' · ' + freq[g.col] : ''), suffix: ':' + g.col,
+        title: monthName + ' maintenance · ' + addr, addr: addr, text: parts.join('\n'),
+        date: new Date(year, monthIdx, 1),
+      }));
+    });
+  }
+  return items;
+}
+
+// ───────── sync ─────────
+
+/** Opens a source file. Excel files are converted to a temporary Google Sheet (needs the Drive API service). */
+function openSource_(fileId) {
+  const file = DriveApp.getFileById(fileId);
+  if (file.getMimeType() === MimeType.GOOGLE_SHEETS) {
+    return { ss: SpreadsheetApp.openById(fileId), tempId: '', url: 'https://docs.google.com/spreadsheets/d/' + fileId + '/edit', native: true };
+  }
+  if (typeof Drive === 'undefined') {
+    throw new Error(file.getName() + ' is an Excel file. Turn on the "Drive API" service in Apps Script (Services → +) so it can be read.');
+  }
+  const copy = Drive.Files.copy({ name: '_oa_temp_' + file.getName(), mimeType: MimeType.GOOGLE_SHEETS,
+                                  parents: [getSettings_().SYSTEM_FOLDER_ID] }, fileId);
+  return { ss: SpreadsheetApp.openById(copy.id), tempId: copy.id, url: file.getUrl(), native: false };
+}
+
+/** Reads every active Data Source and rebuilds the search index. Runs every hour; you can also run it by hand. */
+function syncSources() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) { Logger.log('A sync is already running.'); return; }
+  const started = new Date();
+  const items = [];
+  const report = [];
+  const opened = {};   // one conversion per file, even if several sources read it
+  try {
+    const sheet = SpreadsheetApp.getActive().getSheetByName('Data Sources');
+    const rows = readTable_('Data Sources');
+    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
+    rows.forEach(function (src, i) {
+      if (!isTrue_(src.active)) return;
+      let count = 0, result = 'OK';
+      try {
+        const fid = String(src.file_id).trim();
+        const book = opened[fid] || (opened[fid] = openSource_(fid));
+        {
+          const re = new RegExp(String(src.tabs || '.*'), 'i');
+          book.ss.getSheets().forEach(function (sh) {
+            const tab = sh.getName().trim();
+            if (!re.test(tab)) return;
+            const gid = sh.getSheetId();
+            const ctx = {
+              source: src, tab: tab, title: book.ss.getName(),
+              rowUrl: function (row) { return book.native ? book.url + '#gid=' + gid + '&range=A' + row : book.url; },
+            };
+            const values = sh.getDataRange().getValues();
+            const found = String(src.parser).trim() === 'schedule' ? parseSchedule_(values, ctx) : parseTable_(values, ctx);
+            found.forEach(function (it) { items.push(it); });
+            count += found.length;
+          });
+        }
+      } catch (err) {
+        result = 'FAILED: ' + err.message;
+      }
+      report.push(src.source_id + ': ' + count + ' items · ' + result);
+      // Write the status next to the source so Kaixin can see it in the sheet.
+      const r = i + 2;
+      const put = function (name, value) { const c = headers.indexOf(name); if (c >= 0) sheet.getRange(r, c + 1).setValue(value); };
+      put('last_sync', started); put('last_result', count + ' items · ' + result);
+    });
+    // Version = fingerprint of the content, so phones only download the index again when something changed.
+    const body = JSON.stringify(items);
+    const version = Utilities.base64EncodeWebSafe(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, body)).slice(0, 16);
+    const index = { version: version, builtAt: started.toISOString(), items: items };
+    const folder = DriveApp.getFolderById(getSettings_().SYSTEM_FOLDER_ID);
+    const existing = folder.getFilesByName(INDEX_FILE_NAME);
+    const json = JSON.stringify(index);
+    if (existing.hasNext()) existing.next().setContent(json);
+    else folder.createFile(INDEX_FILE_NAME, json, MimeType.PLAIN_TEXT);
+    PropertiesService.getScriptProperties().setProperty('INDEX_VERSION', index.version);
+    CacheService.getScriptCache().remove('index');
+    Logger.log('Search index rebuilt: ' + items.length + ' items\n' + report.join('\n'));
+    return report;
+  } finally {
+    Object.keys(opened).forEach(function (k) {
+      if (opened[k].tempId) { try { Drive.Files.remove(opened[k].tempId); } catch (e) { /* already gone */ } }
+    });
+    lock.releaseLock();
+  }
+}
+
+function loadIndex_() {
+  const cache = CacheService.getScriptCache();
+  const hit = cache.get('index');
+  if (hit) return JSON.parse(hit);
+  const files = DriveApp.getFolderById(getSettings_().SYSTEM_FOLDER_ID).getFilesByName(INDEX_FILE_NAME);
+  if (!files.hasNext()) return { version: '', items: [] };
+  const text = files.next().getBlob().getDataAsString();
+  if (text.length < 95000) cache.put('index', text, 600);   // the script cache holds at most 100 KB per key
+  return JSON.parse(text);
+}
+
+/** Sources this user may see: Data Sources.roles lists role_ids (admin always sees everything). */
+function visibleSourceIds_(user) {
+  return readTable_('Data Sources').filter(function (s) {
+    if (!isTrue_(s.active)) return false;
+    if (user.isAdmin) return true;
+    const allowed = String(s.roles || '').split(',').map(function (r) { return r.trim(); });
+    return user.roles.some(function (r) { return allowed.indexOf(r) >= 0; });
+  }).map(function (s) { return String(s.source_id); });
+}
+
+function installSyncTrigger_() {
+  ScriptApp.getProjectTriggers()
+    .filter(function (t) { return t.getHandlerFunction() === 'syncSources'; })
+    .forEach(function (t) { ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger('syncSources').timeBased().everyHours(1).create();
 }

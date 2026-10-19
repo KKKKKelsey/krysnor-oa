@@ -19,6 +19,9 @@
     outbox: [],
     syncing: false,
     filters: { q: '', tech: '', type: '', follow: false },
+    index: null,                         // company-sheet rows the user may see { version, items, sources }
+    search: '',
+    week: null,                          // Monday of the week shown in Schedule
   };
 
   // ───────── helpers ─────────
@@ -60,16 +63,21 @@
     open() {
       if (this._db) return Promise.resolve(this._db);
       return new Promise((res, rej) => {
-        const r = indexedDB.open('krysnor-oa', 1);
-        r.onupgradeneeded = () => r.result.createObjectStore('outbox', { keyPath: 'client_id' });
+        const r = indexedDB.open('krysnor-oa', 2);
+        r.onupgradeneeded = () => {
+          const db = r.result;
+          if (!db.objectStoreNames.contains('outbox')) db.createObjectStore('outbox', { keyPath: 'client_id' });
+          if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
+        };
         r.onsuccess = () => { this._db = r.result; res(this._db); };
         r.onerror = () => rej(r.error);
       });
     },
-    async tx(mode, fn) {
+    async tx(mode, fn, storeName) {
       const db = await this.open();
       return new Promise((res, rej) => {
-        const t = db.transaction('outbox', mode); const store = t.objectStore('outbox');
+        const name = storeName || 'outbox';
+        const t = db.transaction(name, mode); const store = t.objectStore(name);
         const out = fn(store);
         t.oncomplete = () => res(out && out.result !== undefined ? out.result : out);
         t.onerror = () => rej(t.error);
@@ -78,6 +86,8 @@
     all() { return this.tx('readonly', (s) => s.getAll()); },
     put(item) { return this.tx('readwrite', (s) => s.put(item)); },
     del(id) { return this.tx('readwrite', (s) => s.delete(id)); },
+    getKv(k) { return this.tx('readonly', (s) => s.get(k), 'kv'); },
+    setKv(k, v) { return this.tx('readwrite', (s) => s.put(v, k), 'kv'); },
   };
   async function loadOutbox() {
     try { state.outbox = (await DB.all()).sort((a, b) => a.created.localeCompare(b.created)); }
@@ -147,6 +157,17 @@
   async function refreshData() {
     const d = await api('bootstrap');
     state.data = d; LS.set('data', d);
+    if (!state.index) { try { state.index = (await DB.getKv('index')) || null; } catch (e) { state.index = null; } }
+    if (!state.index || state.index.version !== d.indexVersion || !d.indexVersion) {
+      try {
+        const idx = await api('searchIndex');
+        state.index = idx; await DB.setKv('index', idx);
+      } catch (e) { /* keep the copy on this device */ }
+    }
+  }
+  async function loadIndexFromDevice() {
+    if (state.index) return;
+    try { state.index = (await DB.getKv('index')) || null; } catch (e) { state.index = null; }
   }
 
   // ───────── sync ─────────
@@ -518,15 +539,186 @@
     });
   }
 
+  // ───────── search across company sheets + OA reports ─────────
+  const NOT_STREET = ['am','pm','weeks','week','days','day','stops','stop','floors','floor','cars','car','hours','hrs','hr',
+    'years','year','months','month','units','unit','sets','set','crew','crews','and','the','for','to','of','min','mins','ext',
+    'locks','lock','sec','phones','photos','invoice','invoices','yes','no','jan','feb','mar','apr','jun','jul','aug','sep',
+    'sept','oct','nov','dec','january','february','march','april','june','july','august','september','october','november',
+    'december','th','nd','rd','st','person','people','pcs','pc','ft','feet','mm','lbs','kg','fpm','hp','v'];
+  // Same rule as the server: "260 Russel Hill Rd" and "260 Russell Hill" → "260 russ".
+  function addrKey(text) {
+    const s = String(text || '').replace(/_/g, ' ').replace(/\d{4}-\d{2}-\d{2}/g, ' ')
+      .replace(/\b\d{1,2}([:.]\d{2})?\s*(am|pm)\b/gi, ' ').replace(/\d{1,2}:\d{2}/g, ' ').replace(/[#$]\s*\d+/g, ' ');
+    const re = /(?:^|[^\d\w])(\d{1,5})[a-z]?[ \t]*[-,]?[ \t]+([A-Za-z][A-Za-z'.]*)(?:[ \t]+([A-Za-z][A-Za-z'.]*))?/gi;
+    let m;
+    while ((m = re.exec(s)) !== null) {
+      let w = m[2].replace(/[.']/g, '').toLowerCase();
+      if (/^(st|saint|mt|mount|ste)$/.test(w) && m[3]) w = w.slice(0, 2) + m[3].replace(/[.']/g, '').toLowerCase();
+      if (w.length < 3 || NOT_STREET.indexOf(w) >= 0) continue;
+      return m[1] + ' ' + w.slice(0, 4);
+    }
+    return '';
+  }
+  function reportItems() {
+    return allReports().filter((r) => !r.pending).map((r) => ({
+      id: 'R:' + r.report_id, src: 'REPORTS', kind: 'Service report', tab: '', title: r.report_id + ' · ' + (r.site_name || ''),
+      addr: r.site_name || '', key: addrKey(r.site_name), date: String(r.server_time || '').slice(0, 10), person: r.tech_name,
+      text: [r.call_type, r.problem_found, r.work_done, r.parts_used, r.follow_up_note].filter(Boolean).join('\n'),
+      people: [], phones: [], emails: [], url: '#/reports/' + encodeURIComponent(r.report_id), internal: true,
+    }));
+  }
+  function searchItems(q) {
+    const items = ((state.index && state.index.items) || []).concat(reportItems());
+    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+    const digits = q.replace(/\D/g, '');
+    const phoneQuery = digits.length >= 4 && digits.length >= q.replace(/\s/g, '').length - 4;
+    const hits = [];
+    items.forEach((it) => {
+      let score = 0;
+      if (phoneQuery) {
+        if (it.phones.some((p) => p.indexOf(digits) >= 0)) score = 100;
+        else if (String(it.text).replace(/\D/g, '').indexOf(digits) >= 0) score = 40;
+      }
+      if (!score) {
+        const title = (it.title + ' ' + it.addr).toLowerCase();
+        const hay = (title + ' ' + it.text + ' ' + it.people.join(' ') + ' ' + it.emails.join(' ') + ' ' + it.person + ' ' + it.kind).toLowerCase();
+        if (!words.every((w) => hay.indexOf(w) >= 0)) return;
+        score = words.every((w) => title.indexOf(w) >= 0) ? 60 : 20;
+        if (it.emails.some((e) => e === q.toLowerCase().trim())) score = 100;
+      }
+      hits.push({ it, score });
+    });
+    // Group by building so one search shows the whole history of an address.
+    const groups = {};
+    hits.forEach((h) => {
+      const k = h.it.key || ('~' + h.it.id);
+      const g = groups[k] || (groups[k] = { key: k, items: [], score: 0, last: '' });
+      g.items.push(h.it); g.score = Math.max(g.score, h.score);
+      if (h.it.date > g.last) g.last = h.it.date;
+    });
+    // The monthly "maintenance to be done" list repeats each building every month: keep only the latest month up to today.
+    const today = iso(new Date());
+    Object.values(groups).forEach((g) => {
+      const monthly = g.items.filter((i) => /maintenance to be done/i.test(i.kind));
+      if (monthly.length < 2) return;
+      const past = monthly.filter((i) => i.date <= today).sort((a, b) => b.date.localeCompare(a.date));
+      const keep = past[0] || monthly.sort((a, b) => a.date.localeCompare(b.date))[0];
+      g.items = g.items.filter((i) => !/maintenance to be done/i.test(i.kind) || i === keep);
+    });
+    return Object.values(groups).sort((a, b) => b.score - a.score || b.last.localeCompare(a.last))
+      .map((g) => { g.items.sort((a, b) => String(b.date).localeCompare(String(a.date))); return g; });
+  }
+  function personColor(name) {
+    const n = String(name || '').trim().toLowerCase();
+    const u = state.data && state.data.users.find((x) => String(x.name).toLowerCase() === n);
+    if (u && u.color) return u.color;
+    const palette = ['#8C564B', '#17BECF', '#BCBD22', '#E377C2', '#7F7F7F', '#9467BD'];
+    let h = 0; for (const ch of n) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    return palette[h % palette.length];
+  }
+  function contactLine(it) {
+    const bits = [];
+    it.people.slice(0, 3).forEach((p) => bits.push('<span>' + esc(p) + '</span>'));
+    it.phones.slice(0, 3).forEach((p) => bits.push('<a href="tel:' + p + '">' + esc(p.replace(/(\d{3})(\d{3})(\d{4})/, '$1 $2 $3')) + '</a>'));
+    it.emails.slice(0, 2).forEach((e) => bits.push('<a href="mailto:' + esc(e) + '">' + esc(e) + '</a>'));
+    return bits.length ? '<div class="card-meta">' + bits.join('') + '</div>' : '';
+  }
+  function resultCard(it) {
+    const open = it.internal ? '<a href="' + esc(it.url) + '">Open report</a>'
+      : '<a href="' + esc(it.url) + '" target="_blank" rel="noopener">Open in sheet</a>';
+    return '<div class="card">' +
+      '<div class="card-top"><span class="chip">' + esc(it.kind) + '</span>' +
+        (it.date ? '<span class="mono muted">' + esc(it.date) + '</span>' : '') +
+        (it.person ? '<span class="who"><i style="background:' + esc(personColor(it.person)) + '"></i>' + esc(it.person) + '</span>' : '') + '</div>' +
+      '<div class="card-title">' + esc(it.title) + '</div>' +
+      '<div class="card-body">' + esc(it.text.split('\n').filter((l) => l !== it.title).join(' · ')) + '</div>' +
+      contactLine(it) +
+      '<div class="card-meta">' + open + '</div>' +
+    '</div>';
+  }
+  function renderSearch() {
+    const idx = state.index;
+    const ready = idx && idx.items;
+    view().innerHTML =
+      '<div class="filters"><input id="s-q" class="search" type="search" autocomplete="off" ' +
+        'placeholder="Address, name, phone or email…" value="' + esc(state.search) + '"></div>' +
+      '<p class="muted" id="s-meta"></p><div class="list" id="s-results"></div>';
+    const meta = $('#s-meta');
+    if (!ready) meta.textContent = online() ? 'Downloading the company sheets…' : 'The company sheets are not on this device yet. Connect once to download them.';
+    else meta.textContent = 'Searching ' + idx.items.length.toLocaleString() + ' rows from ' +
+      idx.sources.map((x) => x.name).join(', ') + ' + service reports. Works offline.';
+    const draw = () => {
+      const q = state.search.trim(); const box = $('#s-results');
+      if (q.length < 2) { box.innerHTML = '<div class="empty">Type at least 2 characters. Phone numbers work with or without spaces.</div>'; return; }
+      const groups = searchItems(q);
+      if (!groups.length) { box.innerHTML = '<div class="empty">Nothing found for “' + esc(q) + '”.</div>'; return; }
+      const shown = groups.slice(0, 25);
+      box.innerHTML = shown.map((g) => {
+        const head = g.key.charAt(0) === '~' ? '' : (g.items.find((i) => i.addr) || g.items[0]);
+        return '<section class="group">' +
+          (head ? '<h2>' + esc(head.addr || head.title) + ' <span class="muted">· ' + g.items.length + ' record' + (g.items.length > 1 ? 's' : '') + '</span></h2>' : '') +
+          g.items.slice(0, 12).map(resultCard).join('') +
+          (g.items.length > 12 ? '<p class="muted">' + (g.items.length - 12) + ' more — refine the search to see them.</p>' : '') +
+        '</section>';
+      }).join('') + (groups.length > 25 ? '<p class="muted">Showing 25 of ' + groups.length + ' addresses.</p>' : '');
+    };
+    const input = $('#s-q');
+    input.addEventListener('input', () => { state.search = input.value; draw(); });
+    if (!state.search) input.focus();
+    draw();
+  }
+
+  // ───────── schedule (week view from the K.E Schedule sheet) ─────────
+  function mondayOf(d) { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; }
+  const iso = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  function renderSchedule() {
+    const items = ((state.index && state.index.items) || []);
+    if (!state.week) state.week = mondayOf(new Date());
+    const mon = state.week;
+    const days = Array.from({ length: 7 }, (_, i) => { const d = new Date(mon); d.setDate(mon.getDate() + i); return d; });
+    const entries = items.filter((it) => it.kind === 'Schedule' && it.date);
+    const byDay = {}; entries.forEach((e) => { (byDay[e.date] = byDay[e.date] || []).push(e); });
+    const people = Array.from(new Set(entries.filter((e) => days.some((d) => iso(d) === e.date)).map((e) => e.person)));
+    const monthKey = iso(mon).slice(0, 7);
+    const due = items.filter((it) => /maintenance to be done/i.test(it.kind) && String(it.date).slice(0, 7) === monthKey);
+    const fmt = (d) => d.toLocaleDateString('en-CA', { weekday: 'short', month: 'short', day: 'numeric' });
+    view().innerHTML =
+      '<div class="weeknav"><button class="btn ghost" id="wk-prev" type="button" aria-label="Previous week">←</button>' +
+        '<strong>' + esc(fmt(days[0])) + ' – ' + esc(fmt(days[6])) + '</strong>' +
+        '<button class="btn ghost" id="wk-next" type="button" aria-label="Next week">→</button>' +
+        '<button class="btn ghost" id="wk-today" type="button">Today</button></div>' +
+      (people.length ? '<div class="legend">' + people.map((p) => '<span class="who"><i style="background:' + esc(personColor(p)) + '"></i>' + esc(p) + '</span>').join('') + '</div>' : '') +
+      (!entries.length ? '<div class="empty">' + (state.index ? 'No schedule rows visible to you.' : 'Connect once to download the schedule.') + '</div>' : '') +
+      '<div class="week">' + days.map((d) => {
+        const list = (byDay[iso(d)] || []).slice().sort((a, b) => String(a.person).localeCompare(String(b.person)));
+        const today = iso(d) === iso(new Date());
+        if (!list.length && (d.getDay() === 0 || d.getDay() === 6)) return '';
+        return '<section class="day' + (today ? ' today' : '') + '"><h2>' + esc(fmt(d)) + (today ? ' · today' : '') + '</h2>' +
+          (list.length ? list.map((e) => '<a class="block" style="--c:' + esc(personColor(e.person)) + '" href="' + esc(e.url) + '" target="_blank" rel="noopener">' +
+            '<span class="block-who">' + esc(e.person) + '</span><span class="block-text">' + esc(e.text) + '</span></a>').join('')
+            : '<p class="muted">Nothing scheduled.</p>') + '</section>';
+      }).join('') + '</div>' +
+      (due.length ? '<h2>Maintenance due in ' + esc(mon.toLocaleDateString('en-CA', { month: 'long' })) + ' (' + due.length + ')</h2><div class="list">' +
+        due.map((it) => '<div class="card"><div class="card-top"><span class="chip">' + esc(it.kind.replace(/maintenance to be done/i, '').replace(/^\W+|\W+$/g, '') || 'Maintenance') + '</span>' +
+          (/completed|done/i.test(it.text) ? '<span class="chip t-ok">Done</span>' : '') + '</div>' +
+          '<div class="card-title">' + esc(it.addr) + '</div>' +
+          '<div class="card-body">' + esc(it.text.split('\n').slice(1).join(' · ')) + '</div>' + contactLine(it) + '</div>').join('') + '</div>' : '');
+    $('#wk-prev').addEventListener('click', () => { const d = new Date(state.week); d.setDate(d.getDate() - 7); state.week = d; renderSchedule(); });
+    $('#wk-next').addEventListener('click', () => { const d = new Date(state.week); d.setDate(d.getDate() + 7); state.week = d; renderSchedule(); });
+    $('#wk-today').addEventListener('click', () => { state.week = mondayOf(new Date()); renderSchedule(); });
+  }
+
   // ───────── router ─────────
   function route() {
     if (!state.me) { renderSignIn(); return; }
-    const hash = location.hash || '#/reports';
+    const hash = location.hash || '#/search';
     const [path, query] = hash.slice(1).split('?');
     const parts = path.split('/').filter(Boolean);
     const tab = parts[0] || 'reports';
     document.querySelectorAll('.tabs a').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
-    if (tab === 'reports' && parts[1]) renderDetail(decodeURIComponent(parts[1]));
+    if (tab === 'search') renderSearch();
+    else if (tab === 'schedule') renderSchedule();
+    else if (tab === 'reports' && parts[1]) renderDetail(decodeURIComponent(parts[1]));
     else if (tab === 'new') renderNew(new URLSearchParams(query || ''));
     else if (tab === 'outbox') renderOutbox();
     else if (tab === 'sites') renderSites();
@@ -548,6 +740,7 @@
 
   (async function start() {
     await loadOutbox();
+    await loadIndexFromDevice();
     renderChrome(); route();
     if (state.me && online()) {
       if (tokenValid()) { try { await refreshData(); renderChrome(); route(); } catch (e) { banner(e.message, true); } syncOutbox(); }

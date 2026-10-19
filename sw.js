@@ -1,5 +1,5 @@
 // Offline support: keep the app shell on the phone; data is cached by app.js.
-const CACHE = 'krysnor-oa-v2';
+const CACHE = 'krysnor-oa-v3';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './config.js', './manifest.webmanifest',
                './icons/icon-192.png', './icons/icon-512.png'];
 
