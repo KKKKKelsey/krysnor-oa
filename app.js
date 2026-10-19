@@ -23,6 +23,7 @@
     tables: null,                        // raw company-sheet tables for the Tables page
     search: '',
     week: null,                          // Monday of the week shown in Schedule
+    notes: LS.get('notes', null),        // latest 9:00 notification batch { batch_at, batches, items }
   };
 
   // ───────── helpers ─────────
@@ -165,7 +166,12 @@
         state.index = idx; await DB.setKv('index', idx);
       } catch (e) { /* keep the copy on this device */ }
     }
+    await loadNotes();
     renderChrome();
+  }
+  async function loadNotes() {
+    try { state.notes = await api('notifications', {}); LS.set('notes', state.notes); } catch (e) { /* keep the copy on this device */ }
+    renderBell();
   }
   async function loadIndexFromDevice() {
     if (state.index) return;
@@ -174,15 +180,18 @@
 
   // ───────── sync ─────────
   async function syncOutbox() {
-    if (state.syncing) return;
+    if (state.syncing) { state.syncAgain = true; return; }   // run once more when the current sync ends
+    state.syncAgain = false;
     await loadOutbox();
     if (!online() || !tokenValid() || !CFG.apiUrl) { renderSync(); return; }
     state.syncing = true; renderSync();
     let sent = 0;
     for (const item of state.outbox) {
       try {
-        await api('createReport', item.payload);
+        const res = await api('createReport', item.payload);
         await DB.del(item.client_id); sent++;
+        // Show the numbered report straight away, before the full refresh below finishes.
+        if (res && res.report && state.data && !state.data.reports.some((x) => x.report_id === res.report.report_id)) state.data.reports.push(res.report);
       } catch (e) {
         item.error = e.message; item.tries = (item.tries || 0) + 1;
         await DB.put(item);
@@ -194,8 +203,9 @@
     try { await refreshData(); } catch (e) { /* keep cached data */ }
     state.syncing = false;
     renderSync();
+    if (state.syncAgain) syncOutbox();
     if (sent) toast(sent + ' report' + (sent > 1 ? 's' : '') + ' uploaded');
-    route();
+    if (!state.touched) route();         // never wipe a form or a page the person is working in
   }
 
   // ───────── chrome (top bar, tabs) ─────────
@@ -216,7 +226,7 @@
     const signedIn = !!state.me;
     $('#tabs').hidden = !signedIn;
     $('#tab-new').hidden = !can('report.create');
-    $('#tab-sites').hidden = !can('site.create');
+    renderBell();
     $('#tab-tables').hidden = !(state.index && state.index.tableCount > 0);
     const chip = $('#user-chip');
     chip.hidden = !signedIn;
@@ -228,6 +238,70 @@
       $('#oa-name').textContent = state.me.oaName || 'Krysnor OA';
     }
     renderSync();
+  }
+
+  // ───────── notifications (the "!" in the top bar; refreshed by the server every day at 9:00) ─────────
+  const openNotes = () => ((state.notes && state.notes.items) || []).filter((i) => i.status !== 'done');
+  function renderBell() {
+    const b = $('#bell'); if (!b) return;
+    b.hidden = !state.me;
+    const n = openNotes().length;
+    const c = $('#bell-count'); c.textContent = n; c.hidden = !n;
+    b.classList.toggle('hot', n > 0);
+    b.title = n ? n + ' open reminder' + (n > 1 ? 's' : '') : 'Notifications';
+  }
+  const batchLabel = (b) => b ? new Date(b).toLocaleString('en-CA', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+  function noteCard(i, live) {
+    const done = i.status === 'done';
+    return '<div class="card note' + (done ? ' done' : '') + '" data-task="' + esc(i.task_id) + '">' +
+      '<div class="card-top"><span class="chip">' + esc(i.type || 'Task') + '</span>' +
+        (done ? '<span class="chip t-ok">Done</span>' : '<span class="chip t-warn">Open</span>') + '<span class="ticket">' + esc(i.task_id) + '</span></div>' +
+      '<div class="card-title">' + esc(i.title) + '</div>' +
+      '<div class="card-meta">' + (i.created_at ? 'Since ' + esc(fmtDate(i.created_at)) : '') +
+        (done ? ' · done by ' + esc(String(i.done_by).split('@')[0]) + ' ' + esc(fmtDate(i.done_at)) + (i.note ? ' · ' + esc(i.note) : '') : '') + '</div>' +
+      '<div class="actions">' + (i.ref_id ? '<a class="btn ghost" href="#/reports/' + encodeURIComponent(i.ref_id) + '">Open ' + esc(i.ref_id) + '</a>' : '') +
+        (live && !done && i.can_complete ? '<input type="text" class="note-in" placeholder="Note, e.g. invoice #" aria-label="Note">' +
+          '<button class="btn primary" type="button" data-done="' + esc(i.task_id) + '">Mark done</button>' : '') + '</div></div>';
+  }
+  function openNotifications(batchAt) {
+    const n = state.notes;
+    const live = !batchAt;
+    const draw = (data) => {
+      const items = (data && data.items) || [];
+      const open = items.filter((i) => i.status !== 'done');
+      const done = items.filter((i) => i.status === 'done');
+      openDrawer(live ? 'Notifications' : 'Past · ' + batchLabel(data.batch_at),
+        '<p class="muted">' + (data && data.batch_at ? (live ? 'Refreshed ' : 'Sent ') + esc(batchLabel(data.batch_at)) + ' · new lists arrive every day at 9:00' : 'No reminders yet. The first list arrives at 9:00.') + '</p>' +
+        (items.length ? '' : '<div class="empty">Nothing for you in this list.</div>') +
+        open.map((i) => noteCard(i, live)).join('') +
+        (done.length ? '<h2>Done since</h2>' + done.map((i) => noteCard(i, live)).join('') : '') +
+        '<div class="actions">' + (live ? '<button class="btn" type="button" id="past-btn">Past notifications</button>'
+          : '<button class="btn" type="button" id="back-btn">Back to today</button>') + '</div>' +
+        '<div id="past-list"></div>');
+      const pb = $('#past-btn');
+      if (pb) pb.addEventListener('click', () => {
+        const list = ((state.notes && state.notes.batches) || []).slice(1);
+        $('#past-list').innerHTML = list.length ? '<h2>Past notifications</h2><div class="past">' +
+          list.map((b) => '<button class="btn ghost" type="button" data-batch="' + esc(b) + '">' + esc(batchLabel(b)) + '</button>').join('') + '</div>'
+          : '<div class="empty">No earlier lists yet.</div>';
+        $('#past-list').querySelectorAll('[data-batch]').forEach((x) => x.addEventListener('click', () => openNotifications(x.dataset.batch)));
+      });
+      const bb = $('#back-btn'); if (bb) bb.addEventListener('click', () => openNotifications());
+      $('#drawer').querySelectorAll('[data-done]').forEach((btn) => btn.addEventListener('click', async () => {
+        const card = btn.closest('.card');
+        btn.disabled = true; btn.textContent = 'Saving…';
+        try {
+          await api('completeTask', { task_id: btn.dataset.done, note: card.querySelector('.note-in').value });
+          const it = state.notes.items.find((x) => x.task_id === btn.dataset.done);
+          if (it) { it.status = 'done'; it.done_by = state.me.user.email; it.done_at = new Date().toISOString(); it.note = card.querySelector('.note-in').value; }
+          LS.set('notes', state.notes); renderBell(); toast('Marked done'); openNotifications();
+        } catch (e) { btn.disabled = false; btn.textContent = 'Mark done'; toast(e.message); }
+      }));
+    };
+    if (live) { draw(n); return; }
+    if (!online()) { toast('Past notifications need the internet'); return; }
+    openDrawer('Past notifications', '<div class="empty">Loading…</div>');
+    api('notifications', { batch_at: batchAt }).then(draw).catch((e) => openDrawer('Past notifications', '<div class="empty">' + esc(e.message) + '</div>'));
   }
 
   // ───────── views ─────────
@@ -510,10 +584,16 @@
     }));
   }
 
+  const siteKey = (s) => addrKey(s.address) || addrKey(s.name);
+  const FREQ_ORDER = { monthly: 1, quarterly: 2, 'semi-annual': 3, 'semi annual': 3, 'bi-annual': 3 };
   function renderSites() {
-    if (!can('site.create')) { view().innerHTML = '<div class="empty">Your role cannot add sites.</div>'; return; }
-    const sites = (state.data && state.data.sites) || [];
-    view().innerHTML = '<h1>Sites</h1>' +
+    const sites = ((state.data && state.data.sites) || []).slice()
+      .sort((a, b) => (FREQ_ORDER[String(a.frequency).toLowerCase()] || 9) - (FREQ_ORDER[String(b.frequency).toLowerCase()] || 9) || String(a.name).localeCompare(String(b.name)));
+    const q = (state.siteQ || '').toLowerCase();
+    const shown = sites.filter((s) => !q || [s.name, s.address, s.city, s.site_contact, s.contact_name, s.installation_no].join(' ').toLowerCase().indexOf(q) >= 0);
+    const groups = {};
+    shown.forEach((s) => { const g = s.frequency || (s.segment_id === 'RES' ? 'Residential' : 'Other sites'); (groups[g] = groups[g] || []).push(s); });
+    const addForm = can('site.create') ? '<details class="add-site"><summary class="btn">Add a site</summary>' +
       '<form class="stack" id="sf" novalidate>' +
         '<label class="field"><span>Site name</span><input id="s-name" type="text" required placeholder="e.g. 100 King St W"></label>' +
         '<label class="field"><span>Type</span><select id="s-seg">' +
@@ -523,23 +603,100 @@
         '<div class="row2"><label class="field"><span>Contact name</span><input id="s-cname" type="text"></label>' +
           '<label class="field"><span>Contact phone</span><input id="s-cphone" type="tel"></label></div>' +
         '<label class="field"><span>Contact email</span><input id="s-cemail" type="email"></label>' +
+        '<p class="muted">Adding a site that was removed earlier brings it back with its history.</p>' +
         '<p class="muted" id="s-error" role="alert"></p>' +
         '<div class="actions"><button class="btn primary" type="submit">Add site</button></div>' +
-      '</form>' +
-      '<h2>' + sites.length + ' sites</h2><div class="list">' +
-        sites.map((s) => '<div class="card"><div class="card-top"><span class="ticket">' + esc(s.site_id) + '</span><span class="chip">' +
-          esc(s.segment_id) + '</span></div><div class="card-title">' + esc(s.name) + '</div><div class="card-meta">' +
-          esc([s.address, s.city].filter(Boolean).join(', ')) + '</div></div>').join('') + '</div>';
-    $('#sf').addEventListener('submit', async (e) => {
+      '</form></details>' : '';
+    if (!state.data) { view().innerHTML = '<div class="empty">Connect once to download the site list.</div>'; return; }
+    view().innerHTML = '<div class="page-head"><h1>Sites</h1><span class="muted">' + sites.length + ' fixed addresses</span></div>' +
+      '<div class="search-box"><input id="site-q" type="search" placeholder="Filter sites…" value="' + esc(state.siteQ || '') + '" aria-label="Filter sites"></div>' +
+      addForm +
+      Object.keys(groups).map((g) => '<h2>' + esc(g) + ' · ' + groups[g].length + '</h2><div class="list">' +
+        groups[g].map((s) => '<a class="card site-card" href="#/sites/' + encodeURIComponent(s.site_id) + '">' +
+          '<div class="card-top"><span class="ticket">' + esc(s.site_id) + '</span>' +
+            (s.units_qty ? '<span class="chip">' + esc(s.units_qty) + ' unit' + (Number(s.units_qty) > 1 ? 's' : '') + '</span>' : '') +
+            (s.contract_expiry ? '<span class="chip">Expires ' + esc(String(s.contract_expiry).slice(0, 10)) + '</span>' : '') + '</div>' +
+          '<div class="card-title">' + esc(s.name) + '</div>' +
+          '<div class="card-meta">' + esc([s.city, s.site_contact || s.contact_name].filter(Boolean).join(' · ')) + '</div></a>').join('') + '</div>').join('') +
+      (shown.length ? '' : '<div class="empty">No site matches.</div>');
+    const qi = $('#site-q');
+    qi.addEventListener('input', () => { state.siteQ = qi.value; const pos = qi.selectionStart; renderSites(); const n = $('#site-q'); n.focus(); n.setSelectionRange(pos, pos); });
+    const sf = $('#sf');
+    if (sf) sf.addEventListener('submit', async (e) => {
       e.preventDefault();
       const err = $('#s-error'); err.textContent = '';
       try {
-        await api('createSite', {
+        const r = await api('createSite', {
           name: $('#s-name').value, segment_id: $('#s-seg').value, address: $('#s-addr').value, city: $('#s-city').value,
           contact_name: $('#s-cname').value, contact_phone: $('#s-cphone').value, contact_email: $('#s-cemail').value,
         });
-        await refreshData(); toast('Site added'); renderSites();
+        await refreshData(); toast(r && r.restored ? 'Site restored' : 'Site added'); renderSites();
       } catch (ex) { err.textContent = ex.message; }
+    });
+  }
+
+  const itemYear = (it) => String(it.date || '').slice(0, 4) || it.year || '';
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  function renderSiteDetail(id) {
+    const s = state.data && state.data.sites.find((x) => x.site_id === id);
+    if (!s) { view().innerHTML = '<div class="empty">This site is not in the list (it may have been removed). <a href="#/sites">Back to sites</a></div>'; return; }
+    const thisYear = new Date().getFullYear();
+    const years = [thisYear, thisYear - 1, thisYear - 2];
+    const year = Number(state.siteYear) && years.indexOf(Number(state.siteYear)) >= 0 ? Number(state.siteYear) : thisYear;
+    const key = siteKey(s);
+    const all = ((state.index && state.index.items) || []).concat(reportItems())
+      .filter((it) => (key && it.key === key) || (it.internal && it.addr === s.name));
+    // Months covered by the schedule sheet use it; the maintenance-record visit for the same month would be a duplicate.
+    const schedMonths = new Set(((state.index && state.index.items) || []).filter((it) => it.kind === 'Schedule' && it.date).map((it) => it.date.slice(0, 7)));
+    const inYear = all.filter((it) => itemYear(it) === String(year) && !(it.kind === 'Maintenance visit' && schedMonths.has(it.date.slice(0, 7))));
+    const dated = inYear.filter((it) => it.date && !/maintenance to be done/i.test(it.kind));
+    const byMonth = MONTHS.map(() => []);
+    dated.forEach((it) => { const m = Number(it.date.slice(5, 7)) - 1; if (m >= 0 && m < 12) byMonth[m].push(it); });
+    const counts = years.map((y) => all.filter((it) => itemYear(it) === String(y)).length);
+    const records = inYear.filter((it) => !it.date);           // whole-year rows (maintenance record, trackers)
+    const dot = (it) => '<button class="ev" type="button" data-it="' + esc(it.id) + '" style="--c:' + esc(it.internal ? 'var(--navy)' : personColor(it.person)) + '">' +
+      '<b>' + esc(Number(it.date.slice(8, 10)) && !it.approx ? Number(it.date.slice(8, 10)) : '·') + '</b>' + esc(it.internal || it.kind === 'Maintenance visit' ? it.title.split(' · ')[0] : (it.person || it.kind)) + '</button>';
+    const info = [
+      ['Frequency', s.frequency], ['Contract', [s.contract_type, s.contract_value ? '$' + s.contract_value : ''].filter(Boolean).join(' · ')],
+      ['Expires', String(s.contract_expiry || '').slice(0, 10)], ['Units', s.units_qty], ['Installation #', s.installation_no],
+      ['Scheduled week', s.scheduled_week], ['Contact', s.site_contact || [s.contact_name, s.contact_phone, s.contact_email].filter(Boolean).join(' · ')],
+      ['Notes', s.notes],
+    ].filter((r) => r[1]);
+    view().innerHTML =
+      '<a class="back" href="#/sites">‹ Sites</a>' +
+      '<div class="page-head"><h1>' + esc(s.name) + '</h1><span class="ticket">' + esc(s.site_id) + '</span></div>' +
+      '<dl class="kv">' + info.map((r) => '<dt>' + esc(r[0]) + '</dt><dd>' + esc(r[1]) + '</dd>').join('') + '</dl>' +
+      '<div class="cal-bar"><h2 style="margin:0">History</h2><div class="seg" role="group" aria-label="Year">' +
+        years.map((y, i) => '<button type="button" data-year="' + y + '" class="' + (y === year ? 'on' : '') + '">' + y + (counts[i] ? ' <small>' + counts[i] + '</small>' : '') + '</button>').join('') + '</div></div>' +
+      (inYear.length ? '' : '<div class="empty">No records for ' + year + ' at this address.</div>') +
+      (dated.length ? '<div class="year-grid">' + MONTHS.map((m, i) => '<div class="ym' + (byMonth[i].length ? '' : ' none') + '"><div class="ym-h">' + m + '</div>' +
+        byMonth[i].sort((a, b) => a.date.localeCompare(b.date)).map(dot).join('') + '</div>').join('') + '</div>' : '') +
+      (dated.length ? '<h2>Visits and reports · ' + dated.length + '</h2><div class="list">' +
+        dated.slice().sort((a, b) => b.date.localeCompare(a.date)).map((it) => '<button class="card tl" type="button" data-it="' + esc(it.id) + '">' +
+          '<div class="card-top"><span class="chip">' + esc(it.kind) + '</span><span class="muted">' + esc(it.approx ? it.date.slice(0, 7) : it.date) + '</span>' +
+          (it.person ? '<span class="chip" style="border-color:' + esc(personColor(it.person)) + '">' + esc(it.person) + '</span>' : '') + '</div>' +
+          '<div class="card-body">' + esc(it.internal ? it.title + ' · ' + it.text.split('\n')[0] : it.text.split('\n')[0]) + '</div></button>').join('') + '</div>' : '') +
+      (records.length ? '<h2>Records for ' + year + ' · ' + records.length + '</h2><div class="list">' + records.map(resultCard).join('') + '</div>' : '') +
+      (can('site.delete') ? '<details class="danger-zone"><summary>Remove from Sites</summary><form class="stack" id="arch-f">' +
+        '<label class="field"><span>Reason (required)</span><input id="arch-reason" type="text" required placeholder="e.g. Contract ended Dec 2026"></label>' +
+        '<p class="muted">The site leaves the list but nothing is deleted: its rows stay in the master sheet and the hourly import will not add it back. Adding the same name again restores it.</p>' +
+        '<p class="muted" id="arch-err" role="alert"></p><div class="actions"><button class="btn danger" type="submit">Remove site</button></div></form></details>' : '');
+    view().querySelectorAll('[data-year]').forEach((b) => b.addEventListener('click', () => { state.siteYear = b.dataset.year; renderSiteDetail(id); }));
+    const byId = {}; inYear.forEach((it) => { byId[it.id] = it; });
+    view().querySelectorAll('[data-it]').forEach((b) => b.addEventListener('click', () => {
+      const it = byId[b.dataset.it]; if (!it) return;
+      if (it.internal) { location.hash = it.url; return; }
+      openDrawer(it.kind + ' · ' + (it.approx ? it.date.slice(0, 7) + ' (day not recorded)' : it.date),
+        '<div class="card-body" style="-webkit-line-clamp:unset;white-space:pre-wrap">' + esc(it.text) + '</div>' + contactLine(it) +
+        (it.url ? '<div class="actions"><a class="btn" href="' + esc(it.url) + '" target="_blank" rel="noopener">Open in sheet</a></div>' : ''));
+    }));
+    const af = $('#arch-f');
+    if (af) af.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const err = $('#arch-err'); err.textContent = '';
+      if (!online()) { err.textContent = 'Removing a site needs the internet.'; return; }
+      try { await api('archiveSite', { site_id: id, reason: $('#arch-reason').value }); await refreshData(); toast('Removed from Sites'); location.hash = '#/sites'; }
+      catch (ex) { err.textContent = ex.message; }
     });
   }
 
@@ -691,7 +848,13 @@
   // ───────── calendar (Google-Calendar style, from the K.E Schedule sheet) ─────────
   function renderSchedule() {
     const items = ((state.index && state.index.items) || []);
-    const entries = items.filter((it) => it.kind === 'Schedule' && it.date);
+    const sched = items.filter((it) => it.kind === 'Schedule' && it.date);
+    const schedMonths = new Set(sched.map((e) => e.date.slice(0, 7)));
+    // Months without a schedule sheet (2025 and earlier) show the visits written in the maintenance record.
+    const visits = items.filter((it) => it.kind === 'Maintenance visit' && it.date && !schedMonths.has(it.date.slice(0, 7)))
+      .map((it) => Object.assign({}, it, { person: it.person, title: it.title.replace(/^[^·]*·\s*/, ''), past: true }));
+    const reps = reportItems().filter((it) => it.date).map((it) => Object.assign({}, it, { title: it.title, oa: true }));
+    const entries = sched.concat(visits, reps);
     if (!state.week) state.week = mondayOf(new Date());
     const hidden = new Set(LS.get('calHidden', []));
     const canon = (n) => String(n || '').trim().toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase());
@@ -708,7 +871,7 @@
       : (() => { const end = new Date(anchor); end.setDate(anchor.getDate() + 6);
           return anchor.toLocaleDateString('en-CA', { month: 'short', day: 'numeric' }) + ' – ' +
                  end.toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' }); })();
-    const evBtn = (e) => '<button class="ev" type="button" data-ev="' + esc(e.id) + '" style="--c:' + esc(personColor(e.person)) + '">' +
+    const evBtn = (e) => '<button class="ev' + (e.past ? ' past' : '') + (e.oa ? ' oa' : '') + '" type="button" data-ev="' + esc(e.id) + '" style="--c:' + esc(personColor(e.person)) + '">' +
       '<b>' + esc(e.person) + '</b>' + esc(e.title) + '</button>';
     const todayIso = iso(new Date());
     let body = '';
@@ -749,6 +912,8 @@
         '<button class="btn ghost" id="cal-prev" type="button" aria-label="Previous">‹</button>' +
         '<button class="btn ghost" id="cal-next" type="button" aria-label="Next">›</button>' +
         '<h1>' + esc(title) + '</h1>' +
+        '<input type="month" id="cal-jump" aria-label="Go to month" value="' + esc(iso(mode === 'month' ? monthStart : anchor).slice(0, 7)) + '"' +
+          (entries.length ? ' min="' + esc(entries.reduce((m, e) => e.date < m ? e.date : m, '9999').slice(0, 7)) + '"' : '') + '>' +
         '<div class="seg" role="group" aria-label="View"><button type="button" data-mode="week" class="' + (mode === 'week' ? 'on' : '') + '">Week</button>' +
         '<button type="button" data-mode="month" class="' + (mode === 'month' ? 'on' : '') + '">Month</button></div></div>' +
       (people.length ? '<div class="cal-people">' + people.map((p) => '<label style="--c:' + esc(personColor(p)) + '"><input type="checkbox" data-person="' + esc(p) + '"' +
@@ -763,6 +928,15 @@
     $('#cal-prev').addEventListener('click', () => step(-1));
     $('#cal-next').addEventListener('click', () => step(1));
     $('#cal-today').addEventListener('click', () => { state.week = mondayOf(new Date()); renderSchedule(); });
+    $('#cal-jump').addEventListener('change', (ev) => {
+      const v = ev.target.value; if (!/^\d{4}-\d{2}$/.test(v)) return;
+      const m = new Date(Number(v.slice(0, 4)), Number(v.slice(5, 7)) - 1, 1);
+      state.week = mondayOf(m); if (state.week.getMonth() !== m.getMonth()) state.week.setDate(state.week.getDate() + 7);
+      renderSchedule();
+    });
+    const legend = [visits.length ? '<span class="ev past" style="--c:#8A99A6">Lighter</span> = from the maintenance record (before the schedule sheet)' : '',
+      reps.length ? '<span class="ev oa" style="--c:#8A99A6">Outlined</span> = OA service report' : ''].filter(Boolean);
+    if (legend.length) view().insertAdjacentHTML('beforeend', '<p class="muted cal-legend">' + legend.join(' · ') + '</p>');
     view().querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => { LS.set('calView', b.dataset.mode); renderSchedule(); }));
     view().querySelectorAll('[data-person]').forEach((cb) => cb.addEventListener('change', () => {
       const h = new Set(LS.get('calHidden', [])); if (cb.checked) h.delete(cb.dataset.person); else h.add(cb.dataset.person);
@@ -774,9 +948,11 @@
     const byId = {}; visible.forEach((e) => { byId[e.id] = e; });
     view().querySelectorAll('[data-ev]').forEach((b) => b.addEventListener('click', () => {
       const e = byId[b.dataset.ev]; if (!e) return;
+      if (e.oa) { location.hash = e.url; return; }
       const related = e.key ? ((state.index && state.index.items) || []).filter((x) => x.key === e.key && x.id !== e.id).length : 0;
       openDrawer(e.person + ' · ' + new Date(e.date + 'T12:00:00').toLocaleDateString('en-CA', { weekday: 'long', month: 'long', day: 'numeric' }),
         '<div class="card-body" style="-webkit-line-clamp:unset;white-space:pre-wrap">' + esc(e.text) + '</div>' + contactLine(e) +
+        (e.approx ? '<p class="muted">The day was not written in the maintenance record, so this sits on the 1st.</p>' : '') +
         '<div class="actions"><a class="btn" href="' + esc(e.url) + '" target="_blank" rel="noopener">Open in sheet</a>' +
         (related ? '<button class="btn ghost" type="button" id="dr-related">' + related + ' other records at this address</button>' : '') + '</div>');
       const rel = $('#dr-related');
@@ -835,6 +1011,7 @@
 
   // ───────── router ─────────
   function route() {
+    state.touched = false;
     if (!state.me) { renderSignIn(); return; }
     const hash = location.hash || '#/search';
     const [path, query] = hash.slice(1).split('?');
@@ -848,6 +1025,7 @@
     else if (tab === 'reports' && parts[1]) renderDetail(decodeURIComponent(parts[1]));
     else if (tab === 'new') renderNew(new URLSearchParams(query || ''));
     else if (tab === 'outbox') renderOutbox();
+    else if (tab === 'sites' && parts[1]) renderSiteDetail(decodeURIComponent(parts[1]));
     else if (tab === 'sites') renderSites();
     else renderReports();
     window.scrollTo(0, 0);
@@ -859,9 +1037,14 @@
   window.addEventListener('offline', renderSync);
   $('#sync-pill').addEventListener('click', () => { if (!tokenValid() && online()) renewSignIn(); syncOutbox(); });
   $('#user-chip').addEventListener('click', () => { $('#user-menu').hidden = false; });
+  $('#bell').addEventListener('click', () => openNotifications());
+  // Fresh data arriving after start-up redraws the page only if the person has not started using it.
+  ['input', 'click', 'submit'].forEach((t) => $('#view').addEventListener(t, () => { state.touched = true; }, true));
   $('#close-menu').addEventListener('click', () => { $('#user-menu').hidden = true; });
   $('#sign-out').addEventListener('click', signOut);
   setInterval(() => { renderSync(); if (state.outbox.length) syncOutbox(); }, 60000);
+  // Pick up the 9:00 list without a reload (checks every 15 minutes while the page is open).
+  setInterval(() => { if (state.me && online() && tokenValid()) loadNotes(); }, 15 * 60000);
 
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
@@ -870,7 +1053,11 @@
     await loadIndexFromDevice();
     renderChrome(); route();
     if (state.me && online()) {
-      if (tokenValid()) { try { await refreshData(); renderChrome(); route(); } catch (e) { banner(e.message, true); } syncOutbox(); }
+      if (tokenValid()) {
+        const h = location.hash;
+        try { await refreshData(); renderChrome(); if (location.hash === h && !state.touched) route(); } catch (e) { banner(e.message, true); }
+        syncOutbox();
+      }
       else setTimeout(renewSignIn, 800);
     }
   })();

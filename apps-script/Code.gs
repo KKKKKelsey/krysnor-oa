@@ -16,6 +16,7 @@
  *   weeklyBackup()     run a backup now (it also runs by itself every week)
  *   checkSetup()       prints users, their roles and permissions to the log, to verify config
  *   syncSources()      reads the company sheets now (it also runs by itself every hour)
+ *   refreshNotifications()  rebuilds the bell list now (it also runs by itself every day at 9:00)
  */
 
 const MONTH_ABBR = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
@@ -68,6 +69,7 @@ const SEED = {
       ['report.delete', 'Delete any report (kept in the sheet with who/when/why)', true, true, false, false, false],
       ['file.upload', 'Upload files/photos to a project folder', true, true, true, true, false],
       ['site.create', 'Add a customer site or elevator unit', true, true, false, true, false],
+      ['site.delete', 'Remove a site from the Sites list (kept in the sheet as archived)', true, true, false, true, false],
       ['project.create', 'Open a new project (creates its Drive folders)', true, true, false, true, false],
       ['quote.submit', 'Submit a quote for approval', true, false, false, true, false],
       ['quote.approve', 'Approve or send back a quote', true, true, false, false, false],
@@ -130,8 +132,9 @@ const SEED = {
   'Sites': {
     headers: ['site_id', 'name', 'segment_id', 'address', 'city', 'contact_name', 'contact_phone',
               'contact_email', 'notes', 'created_at', 'created_by', 'site_contact', 'frequency', 'installation_no',
-              'contract_expiry', 'contract_type', 'contract_value', 'units_qty', 'scheduled_week', 'source', 'updated_at'],
-    widths: [90, 220, 90, 260, 110, 150, 130, 200, 220, 150, 200, 260, 100, 160, 110, 160, 100, 80, 100, 150, 150],
+              'contract_expiry', 'contract_type', 'contract_value', 'units_qty', 'scheduled_week', 'source', 'updated_at',
+              'archived', 'archived_at', 'archived_by', 'archive_reason'],
+    widths: [90, 220, 90, 260, 110, 150, 130, 200, 220, 150, 200, 260, 100, 160, 110, 160, 100, 80, 100, 150, 150, 80, 150, 200, 260],
     note: 'Fixed addresses. Rows with source = "Maintenance Record" are imported every hour from the company maintenance ' +
           'record (Monthly / Quarterly / Semi-annual contracts) and kept up to date. Sites added by hand are never overwritten.',
     rows: [],
@@ -181,6 +184,29 @@ const SEED = {
        'admin,manager,office', true, 'Excel file, read in memory (read-only)', '', ''],
     ],
   },
+  'Pipelines': {
+    headers: ['rule_id', 'trigger', 'call_types', 'task_type', 'title_template', 'assign_roles', 'active', 'notes'],
+    widths: [190, 130, 220, 110, 420, 160, 70, 300],
+    note: 'When trigger happens, a task is created for the roles in assign_roles. trigger: report.create. ' +
+          'call_types: blank = every call type, or a comma list. Placeholders: {report_id} {site_name} {call_type} {tech_name}.',
+    rows: [
+      ['INVOICE_AFTER_REPORT', 'report.create', '', 'Invoice', 'Make invoice for {report_id} · {site_name} ({call_type}, {tech_name})',
+       'office', true, 'Duke/Chris submit a report → Kyle makes the invoice'],
+    ],
+  },
+  'Tasks': {
+    headers: ['task_id', 'created_at', 'rule_id', 'type', 'title', 'ref_id', 'assign_roles', 'status', 'done_at', 'done_by', 'note'],
+    widths: [110, 150, 190, 90, 420, 130, 140, 80, 150, 200, 260],
+    note: 'Created by Pipelines. status: open / done. Marked done in the OA by the person who handled it.',
+    rows: [],
+  },
+  'Notifications': {
+    headers: ['batch_at', 'role', 'task_id', 'title', 'status_at_batch'],
+    widths: [160, 100, 110, 420, 110],
+    note: 'Every morning at 9:00 (Toronto) the open tasks are written here as one batch. The bell in the OA shows the latest ' +
+          'batch; "Past notifications" shows older batches.',
+    rows: [],
+  },
   'Maintenance Log': {
     headers: ['site_id', 'address', 'frequency', 'installation_no', 'scheduled_week'].concat(MONTH_ABBR),
     widths: [80, 260, 100, 160, 100, 140, 140, 140, 140, 140, 140, 140, 140, 140, 140, 140, 140],
@@ -220,6 +246,10 @@ const README = [
   ['记录只增不改', '维修报告和审计日志不修改。更正 = 新增一条报告，amends_report_id 填原报告编号。'],
   ['Company sheets', 'Data Sources lists the team\'s own sheets. The OA reads them every hour; staff keep working in them as before. roles = who may see each one.'],
   ['公司表格', 'Data Sources 分页列出团队自己的表格。OA 每小时读取一次，大家照常在原表格工作。roles 决定谁能看到。'],
+  ['Invoice reminders', 'Pipelines: when a report comes in, a task is created (e.g. invoice for Kyle). Every day at 9:00 open tasks appear under the bell (!) in the OA.'],
+  ['发票提醒', 'Pipelines：收到报告后自动生成任务（例如 Kyle 开发票）。每天早上 9 点，未完成的任务会出现在 OA 右上角的「!」里。'],
+  ['Removing a site', 'Kyle, Chris and Kaixin can remove a site in the OA. It stays in Sites with archived = TRUE and is never re-imported. Adding the same name again restores it.'],
+  ['删除站点', 'Kyle、Chris、Kaixin 可以在 OA 里移除站点。它会留在 Sites 表里并标记 archived = TRUE，以后不会被重新导入。再次添加同名站点即可恢复。'],
   ['Deleting a report', 'People with report.delete delete from the OA with a reason; it is listed in Report Deletions and hidden. Remove that row to restore it.'],
   ['删除报告', '有 report.delete 权限的人在 OA 里删除并写原因，记录在 Report Deletions 分页，OA 里不再显示。删掉那一行即可恢复。'],
   ['Backups', 'Every week (Settings: BACKUP_WEEKDAY / BACKUP_HOUR) a copy of this sheet goes to Backups/Weekly. Copies older than BACKUP_RETENTION_DAYS go to Drive trash (recoverable for 30 days).'],
@@ -227,7 +257,7 @@ const README = [
 ];
 
 const BACKUP_NAME_PREFIX = 'Krysnor OA Master backup ';
-const TEXT_COLUMNS = ['report_id', 'project_id', 'site_id', 'unit_id', 'arrived', 'left', 'contact_phone', 'phone',
+const TEXT_COLUMNS = ['report_id', 'project_id', 'site_id', 'unit_id', 'arrived', 'left', 'contact_phone', 'phone', 'task_id', 'ref_id',
                       'installation_no', 'scheduled_week', 'contract_expiry',
                       'client_id', 'amends_report_id', 'folder_id', 'file_id'];
 
@@ -241,6 +271,7 @@ function setup() {
   const folders = setupFolders();
   installBackupTrigger_();
   installSyncTrigger_();
+  installNotificationTrigger_();
   protectAllTabs_(ss);
   audit_(Session.getEffectiveUser().getEmail(), 'setup', ss.getName(),
          'Tabs checked; folders ensured: ' + folders.length + '; weekly backup trigger installed');
@@ -666,6 +697,7 @@ function createReport_(user, p) {
       client_id: clientId,
     };
     appendRecord_('Service Reports', record);
+    if (!amends) runPipelines_('report.create', record);
     audit_(user.email, amends ? 'report.amend' : 'report.create', id,
            siteName + ' · ' + record.call_type + (photos.length ? ' · ' + photos.length + ' photo(s)' : ''));
     return { report: record, duplicate: false };
@@ -705,6 +737,25 @@ function visibleReports_() {
   });
 }
 
+function archiveSite_(user, p) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const reason = clean_(p.reason, 500);
+    if (!reason) throw new Error('Please give a reason for removing the site.');
+    const all = readTable_('Sites');
+    const i = all.findIndex(function (x) { return x.site_id === p.site_id; });
+    if (i < 0) throw new Error('Site ' + p.site_id + ' does not exist.');
+    const sh = SpreadsheetApp.getActive().getSheetByName('Sites');
+    const head = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
+    writeRowFields_(sh, head, i + 2, { archived: true, archived_at: new Date(), archived_by: user.email, archive_reason: reason });
+    audit_(user.email, 'site.archive', p.site_id, reason);
+    return { site_id: p.site_id };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function createSite_(user, p) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
@@ -713,7 +764,16 @@ function createSite_(user, p) {
     if (!name) throw new Error('Site name is required.');
     const segs = readTable_('Segments').map(function (x) { return x.segment_id; });
     if (segs.indexOf(p.segment_id) < 0) throw new Error('Pick Commercial or Residential.');
-    const existing = readTable_('Sites').filter(function (x) { return norm_(x.name) === norm_(name); })[0];
+    const all = readTable_('Sites');
+    const existing = all.filter(function (x) { return norm_(x.name) === norm_(name); })[0];
+    if (existing && isTrue_(existing.archived)) {
+      // Adding a removed site again brings it back.
+      const sh = SpreadsheetApp.getActive().getSheetByName('Sites');
+      const head = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
+      writeRowFields_(sh, head, all.indexOf(existing) + 2, { archived: false, archived_at: '', archived_by: '', archive_reason: '', updated_at: new Date() });
+      audit_(user.email, 'site.restore', existing.site_id, name);
+      return { site: Object.assign(existing, { archived: false }), restored: true };
+    }
     if (existing) throw new Error('A site called "' + name + '" already exists (' + existing.site_id + ').');
     let max = 0;
     readTable_('Sites').forEach(function (r) { max = Math.max(max, Number(String(r.site_id).replace(/\D/g, '')) || 0); });
@@ -753,7 +813,7 @@ const ACTIONS = {
         segments: readTable_('Segments').map(function (s) { return { segment_id: s.segment_id, name: s.name }; }),
         callTypes: readTable_('Call Types').filter(function (c) { return isTrue_(c.active); })
           .map(function (c) { return c.call_type; }),
-        sites: readTable_('Sites'),
+        sites: readTable_('Sites').filter(function (x) { return !isTrue_(x.archived); }),
         units: readTable_('Units'),
         projects: readTable_('Projects'),
         reports: visibleReports_(),
@@ -794,6 +854,18 @@ const ACTIONS = {
       return { version: idx.version, tables: (idx.tables || []).filter(function (t) { return allowed.indexOf(t.src) >= 0; }) };
     },
   },
+  archiveSite: {
+    permission: 'site.delete',
+    run: function (user, p) { return archiveSite_(user, p); },
+  },
+  notifications: {
+    permission: 'view.all',
+    run: function (user, p) { return notificationsFor_(user, p.batch_at || ''); },
+  },
+  completeTask: {
+    permission: 'view.all',
+    run: function (user, p) { return completeTask_(user, p); },
+  },
   deleteReport: {
     permission: 'report.delete',
     run: function (user, p) { return deleteReport_(user, p); },
@@ -832,6 +904,8 @@ function checkSetup() {
   });
   const triggers = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'weeklyBackup'; });
   lines.push(triggers.length ? '✓ weekly backup trigger installed' : '✗ weekly backup trigger missing – run setup()');
+  const nine = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'refreshNotifications'; });
+  lines.push(nine.length ? '✓ 9:00 notification refresh installed' : '✗ 9:00 notification refresh missing – run setup()');
   const sync = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'syncSources'; });
   lines.push(sync.length ? '✓ hourly sync of company sheets installed' : '✗ hourly sync missing – run setup()');
   readTable_('Data Sources').forEach(function (d) {
@@ -943,6 +1017,8 @@ function makeItem_(ctx, row, fields) {
     text: text,
     people: c.people, phones: c.phones, emails: c.emails,
     date: fields.date ? Utilities.formatDate(fields.date, 'America/Toronto', 'yyyy-MM-dd') : '',
+    // Year the row belongs to: its date, else a year in the tab name ("2025 Maintenance-Commercial").
+    year: fields.date ? String(fields.date.getFullYear()) : (((/\b(20\d{2})\b/.exec(ctx.tab) || [])[1]) || ''),
     person: fields.person || '',
     url: ctx.rowUrl(row),
   };
@@ -1225,6 +1301,12 @@ function syncSources() {
                             headers: snap.headers, rows: snap.rows });
             }
             if (String(src.source_id) === String(settings.SITES_IMPORT_SOURCE || 'MAINT') && importTab.test(tab)) importRaw.push(values);
+            const ym = /^(20\d{2}) Maintenance-/i.exec(tab);
+            if (ym && String(src.source_id) === String(settings.SITES_IMPORT_SOURCE || 'MAINT')) {
+              const v = maintenanceVisits_(parseMaintenanceContracts_(values), Number(ym[1]), ctx);
+              v.forEach(function (it) { items.push(it); });
+              count += v.length;
+            }
             found.forEach(function (it) { items.push(it); });
             count += found.length;
           });
@@ -1453,6 +1535,7 @@ function importMaintenanceSites_(contracts) {
       added++;
     } else {
       siteId = hit.site.site_id;
+      if (isTrue_(hit.site.archived)) return;          // removed by Kyle / Chris / Kaixin: never bring it back
       const imported = String(hit.site.source || '') === 'Maintenance Record';
       const changes = {};
       Object.keys(fields).forEach(function (k) {
@@ -1514,4 +1597,145 @@ function buildMaintenanceLog_(contracts, year) {
   sh.getRange(1, header.length + 2).setValue('Built ' + Utilities.formatDate(new Date(), getSettings_().TIMEZONE || 'America/Toronto', 'yyyy-MM-dd HH:mm') +
     ' from the company Maintenance Record + OA service reports. Rebuilt every hour — edit the company sheet, not this tab.');
   return { header: header, rows: rows };
+}
+
+// ───────────────────────────── Past maintenance visits (site history + calendar) ─────────────────────────────
+
+const VISIT_STOP = ['done', 'and', 'maintenance', 'maintenanance', 'service', 'call', 'site', 'visit', 'repair', 'tssa', 'inspection',
+  'inspecction', 'inspector', 'deficiences', 'deficiencies', 'cleared', 'completed', 'the', 'on', 'by', 'with', 'replaced', 'packing',
+  'seals', 'shutdown', 'need', 'needs', 'ropes', 'replacement', 'invoice', 'sent', 'follow', 'up'];
+const MONTH_WORDS = /^(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*$/i;
+
+/** Month cells like "Duke June 9", "Jayden done Jan 12", "02 Chris Duke" → dated visit events. */
+function maintenanceVisits_(contracts, year, ctx) {
+  const out = [];
+  contracts.forEach(function (c) {
+    c.months.forEach(function (cell, m) {
+      const t = String(cell || '').trim();
+      if (!t || /no response|not available|not access|no access|shutdown|won't|no mainten|cancel|^want|^will |^ask |let me know|call me|emailed|called|texted/i.test(t)) return;
+      const names = [];
+      (t.replace(/[_\-&,\/]/g, ' ').match(/[A-Za-z][A-Za-z']*/g) || []).forEach(function (w) {
+        if (!/^[A-Z]/.test(w) || MONTH_WORDS.test(w) || VISIT_STOP.indexOf(w.toLowerCase()) >= 0 || w.length < 3) return;
+        const n = w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+        if (names.indexOf(n) < 0) names.push(n);
+      });
+      if (!names.length) return;
+      let day = 1, exact = false;
+      const dm = /(?:^|[^\d])(\d{1,2})(?:st|nd|rd|th)?(?![\d\/])/.exec(t.replace(/20\d{2}/g, ' '));
+      if (dm && Number(dm[1]) >= 1 && Number(dm[1]) <= 31) { day = Number(dm[1]); exact = true; }
+      const date = new Date(year, m, Math.min(day, new Date(year, m + 1, 0).getDate()));
+      const it = makeItem_(ctx, c.row, {
+        kind: 'Maintenance visit', suffix: ':v' + m, person: names[0], date: date, addr: c.address,
+        title: names.join(' & ') + ' · ' + c.address + (exact ? '' : ' (day not recorded)'),
+        text: t + '\n' + c.frequency + ' maintenance · ' + c.address,
+      });
+      it.approx = !exact;
+      out.push(it);
+    });
+  });
+  return out;
+}
+
+// ───────────────────────────── Pipelines → tasks → 9:00 notifications ─────────────────────────────
+
+function fillTemplate_(tpl, rec) {
+  return String(tpl || '').replace(/\{(\w+)\}/g, function (m, k) { return rec[k] !== undefined ? String(rec[k]) : ''; });
+}
+
+/** Creates tasks for every active Pipelines rule that matches this event. */
+function runPipelines_(trigger, record) {
+  const rules = readTable_('Pipelines').filter(function (r) {
+    if (!isTrue_(r.active) || String(r.trigger).trim() !== trigger) return false;
+    const types = String(r.call_types || '').split(',').map(function (x) { return x.trim().toLowerCase(); }).filter(String);
+    return !types.length || types.indexOf(String(record.call_type || '').toLowerCase()) >= 0;
+  });
+  if (!rules.length) return [];
+  let max = 0;
+  readTable_('Tasks').forEach(function (t) { max = Math.max(max, Number(String(t.task_id).replace(/\D/g, '')) || 0); });
+  return rules.map(function (r) {
+    const task = {
+      task_id: 'T' + ('00000' + (++max)).slice(-5), created_at: new Date(), rule_id: r.rule_id, type: r.task_type,
+      title: fillTemplate_(r.title_template, record), ref_id: record.report_id || '', assign_roles: r.assign_roles,
+      status: 'open', done_at: '', done_by: '', note: '',
+    };
+    appendRecord_('Tasks', task);
+    return task;
+  });
+}
+
+/** Runs every day at 9:00: writes the open tasks as one batch. The bell shows the newest batch. */
+function refreshNotifications() {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    let now = new Date();
+    const last = PropertiesService.getScriptProperties().getProperty('NOTIFY_BATCH');
+    if (last && new Date(last).getTime() >= now.getTime()) now = new Date(new Date(last).getTime() + 1000);  // batches never share a time
+    const open = readTable_('Tasks').filter(function (t) { return String(t.status) === 'open'; });
+    const rows = [];
+    open.forEach(function (t) {
+      String(t.assign_roles || '').split(',').map(function (x) { return x.trim(); }).filter(String).forEach(function (role) {
+        rows.push([now, role, t.task_id, t.title, 'open']);
+      });
+    });
+    if (!rows.length) rows.push([now, '*', '', 'No open tasks', 'none']);   // keeps a record that the 9:00 run happened
+    const sh = SpreadsheetApp.getActive().getSheetByName('Notifications');
+    sh.getRange(sh.getLastRow() + 1, 1, rows.length, 5).setValues(rows);
+    PropertiesService.getScriptProperties().setProperty('NOTIFY_BATCH', now.toISOString());
+    return rows.length;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function installNotificationTrigger_() {
+  ScriptApp.getProjectTriggers()
+    .filter(function (t) { return t.getHandlerFunction() === 'refreshNotifications'; })
+    .forEach(function (t) { ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger('refreshNotifications').timeBased().everyDays(1).atHour(9).nearMinute(0)
+    .inTimezone(getSettings_().TIMEZONE || 'America/Toronto').create();
+}
+
+/** Latest batch (or the batch asked for) for this person's roles, with each task's current status. */
+function notificationsFor_(user, batchAt) {
+  const rows = readTable_('Notifications');
+  const iso = function (d) { return d instanceof Date ? d.toISOString() : String(d); };
+  const batches = [];
+  rows.forEach(function (r) { const b = iso(r.batch_at); if (batches.indexOf(b) < 0) batches.push(b); });
+  batches.sort().reverse();
+  const want = batchAt || batches[0] || '';
+  const tasks = {};
+  readTable_('Tasks').forEach(function (t) { tasks[t.task_id] = t; });
+  const mine = function (role) { return user.isAdmin || role === '*' || user.roles.indexOf(role) >= 0; };
+  const seen = {};
+  const items = rows.filter(function (r) { return iso(r.batch_at) === want && r.task_id && mine(String(r.role)); })
+    .filter(function (r) { if (seen[r.task_id]) return false; seen[r.task_id] = true; return true; })
+    .map(function (r) {
+      const t = tasks[r.task_id] || {};
+      return { task_id: r.task_id, title: r.title, ref_id: t.ref_id || '', type: t.type || '', created_at: t.created_at || '',
+               status: t.status || r.status_at_batch, done_by: t.done_by || '', done_at: t.done_at || '', note: t.note || '',
+               can_complete: user.isAdmin || String(t.assign_roles || '').split(',').some(function (x) { return user.roles.indexOf(x.trim()) >= 0; }) };
+    });
+  return { batch_at: want, batches: batches.slice(0, 90), items: items };
+}
+
+function completeTask_(user, p) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const all = readTable_('Tasks');
+    const i = all.findIndex(function (t) { return t.task_id === p.task_id; });
+    if (i < 0) throw new Error('Task ' + p.task_id + ' does not exist.');
+    const t = all[i];
+    const allowed = String(t.assign_roles || '').split(',').some(function (x) { return user.roles.indexOf(x.trim()) >= 0; });
+    if (!user.isAdmin && !allowed) throw new Error('This task is for ' + t.assign_roles + '.');
+    if (String(t.status) === 'done') return { task_id: t.task_id, status: 'done' };
+    const sh = SpreadsheetApp.getActive().getSheetByName('Tasks');
+    const head = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
+    writeRowFields_(sh, head, i + 2, { status: 'done', done_at: new Date(), done_by: user.email, note: clean_(p.note, 500) });
+    audit_(user.email, 'task.done', t.task_id, t.title + (p.note ? ' · ' + p.note : ''));
+    return { task_id: t.task_id, status: 'done' };
+  } finally {
+    lock.releaseLock();
+  }
 }
