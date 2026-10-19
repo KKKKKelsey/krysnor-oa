@@ -189,9 +189,10 @@
         if (/offline|sign in/i.test(e.message)) break;
       }
     }
+    await loadOutbox();                 // clear the "Waiting" badge as soon as the uploads are done
+    renderSync();
     try { await refreshData(); } catch (e) { /* keep cached data */ }
     state.syncing = false;
-    await loadOutbox();
     renderSync();
     if (sent) toast(sent + ' report' + (sent > 1 ? 's' : '') + ' uploaded');
     route();
