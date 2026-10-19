@@ -60,6 +60,7 @@ const SEED = {
       ['view.all', 'See projects, calendar, reports and files', true, true, true, true, true],
       ['report.create', 'Write a new service report', true, true, true, false, false],
       ['report.amend_own', "Add a correction to one's own report", true, true, true, false, false],
+      ['report.delete', 'Delete any report (kept in the sheet with who/when/why)', true, true, false, false, false],
       ['file.upload', 'Upload files/photos to a project folder', true, true, true, true, false],
       ['site.create', 'Add a customer site or elevator unit', true, true, false, true, false],
       ['project.create', 'Open a new project (creates its Drive folders)', true, true, false, true, false],
@@ -144,6 +145,13 @@ const SEED = {
           'device_time is when the technician pressed Save on the phone (earlier if written offline).',
     rows: [],
   },
+  'Report Deletions': {
+    headers: ['report_id', 'deleted_at', 'deleted_by', 'reason'],
+    widths: [130, 150, 220, 460],
+    note: 'A report listed here is hidden in the OA (with its corrections). The original row in Service Reports is kept. ' +
+          'To restore a report, delete its row here.',
+    rows: [],
+  },
   'Audit Log': {
     headers: ['time', 'email', 'action', 'target', 'detail'],
     widths: [150, 220, 160, 180, 460], rows: [],
@@ -174,6 +182,8 @@ const README = [
   ['取消权限', 'Users 里 active 改成 FALSE，不要删行。'],
   ['Records are append-only', 'Service Reports and Audit Log are never edited. A correction is a new report whose amends_report_id = the original report_id.'],
   ['记录只增不改', '维修报告和审计日志不修改。更正 = 新增一条报告，amends_report_id 填原报告编号。'],
+  ['Deleting a report', 'People with report.delete delete from the OA with a reason; it is listed in Report Deletions and hidden. Remove that row to restore it.'],
+  ['删除报告', '有 report.delete 权限的人在 OA 里删除并写原因，记录在 Report Deletions 分页，OA 里不再显示。删掉那一行即可恢复。'],
   ['Backups', 'Every week (Settings: BACKUP_WEEKDAY / BACKUP_HOUR) a copy of this sheet goes to Backups/Weekly. Copies older than BACKUP_RETENTION_DAYS go to Drive trash (recoverable for 30 days).'],
   ['备份', '每周自动复制这张表到 Backups/Weekly。超过 BACKUP_RETENTION_DAYS 天的备份移到 Drive 回收站（30 天内可恢复）。'],
 ];
@@ -222,10 +232,14 @@ function buildTabs_(ss) {
       def.headers.forEach(function (h) {
         if (have.indexOf(h) < 0) { sh.getRange(1, have.length + 1).setValue(h); have.push(h); }
       });
-      if (name === 'Settings') {
-        // Upgrade: add new settings keys without touching values Kaixin already changed.
+      if (name === 'Settings' || name === 'Permissions') {
+        // Upgrade: add new keys / permissions without touching values Kaixin already changed.
         const keys = sh.getRange(1, 1, sh.getLastRow(), 1).getValues().map(function (r) { return String(r[0]).trim(); });
-        def.rows.forEach(function (r) { if (keys.indexOf(r[0]) < 0) sh.appendRow(r); });
+        def.rows.forEach(function (r) {
+          if (keys.indexOf(r[0]) >= 0) return;
+          // Match by column name, so extra role columns Kaixin added later stay aligned.
+          sh.appendRow(have.map(function (h) { const i = def.headers.indexOf(h); return i >= 0 ? r[i] : ''; }));
+        });
       }
     }
     sh.setFrozenRows(1);
@@ -620,6 +634,37 @@ function createReport_(user, p) {
   }
 }
 
+function deletedReportIds_() {
+  const out = {};
+  readTable_('Report Deletions').forEach(function (d) { if (d.report_id) out[String(d.report_id)] = true; });
+  return out;
+}
+
+function deleteReport_(user, p) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const id = clean_(p.report_id, 40);
+    const reason = clean_(p.reason, 1000);
+    if (!reason) throw new Error('Please give a reason for deleting the report.');
+    if (!readTable_('Service Reports').some(function (r) { return r.report_id === id; })) throw new Error('Report ' + id + ' does not exist.');
+    if (deletedReportIds_()[id]) throw new Error('Report ' + id + ' is already deleted.');
+    appendRecord_('Report Deletions', { report_id: id, deleted_at: new Date(), deleted_by: user.email, reason: reason });
+    audit_(user.email, 'report.delete', id, reason);
+    return { report_id: id };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Reports visible in the OA: deleted ones and corrections of deleted ones are left out. */
+function visibleReports_() {
+  const gone = deletedReportIds_();
+  return readTable_('Service Reports').filter(function (r) {
+    return !gone[r.report_id] && !(r.amends_report_id && gone[r.amends_report_id]);
+  });
+}
+
 function createSite_(user, p) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
@@ -671,7 +716,7 @@ const ACTIONS = {
         sites: readTable_('Sites'),
         units: readTable_('Units'),
         projects: readTable_('Projects'),
-        reports: readTable_('Service Reports'),
+        reports: visibleReports_(),
         syncedAt: new Date().toISOString(),
       };
     },
@@ -683,6 +728,10 @@ const ACTIONS = {
   createReport: {
     permission: 'report.create',
     run: function (user, p) { return createReport_(user, p); },
+  },
+  deleteReport: {
+    permission: 'report.delete',
+    run: function (user, p) { return deleteReport_(user, p); },
   },
   createSite: {
     permission: 'site.create',

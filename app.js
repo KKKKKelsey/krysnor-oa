@@ -319,7 +319,28 @@
       (r.photos_folder_url ? '<p><a class="btn" href="' + esc(r.photos_folder_url) + '" target="_blank" rel="noopener">Open photos in Drive</a></p>' : '') +
       (fixes.length ? '<h2>Corrections</h2><div class="list">' + fixes.map((x) => reportCard(x)).join('') + '</div>' : '') +
       ((mine && can('report.amend_own')) || (state.me && state.me.user.isAdmin)
-        ? '<p class="actions"><a class="btn" href="#/new?amends=' + encodeURIComponent(r.report_id) + '">Add a correction</a></p>' : '');
+        ? '<p class="actions"><a class="btn" href="#/new?amends=' + encodeURIComponent(r.report_id) + '">Add a correction</a></p>' : '') +
+      (can('report.delete') ? '<h2>Delete</h2><div class="field" id="del-box">' +
+        '<span class="muted">Hides this report' + (fixes.length ? ' and its corrections' : '') + ' for everyone. ' +
+        'The sheet keeps the original and records who deleted it, when and why.</span>' +
+        '<textarea id="del-reason" placeholder="Reason (required)" style="min-height:60px"></textarea>' +
+        '<p class="muted" id="del-error" role="alert"></p>' +
+        '<div class="actions"><button class="btn danger" type="button" id="del-btn">Delete report</button></div></div>' : '');
+    const delBtn = $('#del-btn');
+    if (delBtn) delBtn.addEventListener('click', async () => {
+      const reason = $('#del-reason').value.trim(); const err = $('#del-error'); err.textContent = '';
+      if (!reason) { err.textContent = 'Please write why this report is being deleted.'; return; }
+      if (!delBtn.dataset.armed) {
+        delBtn.dataset.armed = '1'; delBtn.textContent = 'Tap again to delete ' + r.report_id;
+        setTimeout(() => { if (delBtn.isConnected) { delete delBtn.dataset.armed; delBtn.textContent = 'Delete report'; } }, 4000);
+        return;
+      }
+      delBtn.disabled = true;
+      try {
+        await api('deleteReport', { report_id: r.report_id, reason });
+        await refreshData(); toast(r.report_id + ' deleted'); location.hash = '#/reports';
+      } catch (e) { err.textContent = e.message; delBtn.disabled = false; }
+    });
   }
 
   // New report form
