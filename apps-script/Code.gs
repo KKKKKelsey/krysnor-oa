@@ -165,12 +165,12 @@ const SEED = {
       ['SCHED_TRACK', 'K.E Schedule – trackers', '1GAMJ-48KE1d-LWktGPG8i_RXiywHOcDXWnWidrrI9hY',
        '^(RepairsLeadTo Do list|New Installation-Modernization)$', 'table', 'admin,manager,office', true, '', '', ''],
       ['MAINT', 'Maintenance Record', '1RflhAV5qhghDGzI6HIUgyJE8TO1ba-6a',
-       'Maintenance-(Commercial|Residential)', 'table', 'admin,manager,office', true, 'Excel file: needs the Drive API service', '', ''],
+       'Maintenance-(Commercial|Residential)', 'table', 'admin,manager,office', true, 'Excel file, read in memory (read-only)', '', ''],
       ['INVOICES', 'Overdue invoices', '1RflhAV5qhghDGzI6HIUgyJE8TO1ba-6a', '^Overdue Invoices$', 'table',
        'admin,manager,office', true, '', '', ''],
       ['TRACKER', 'Project tracker', '1eRPFFA_s5HmVAoA6W9cOASB-GKGkGIHd',
        '^(Quote & Lead follow up|Repair & Service Call|Project follow up|Install Schedule)$', 'table',
-       'admin,manager,office', true, 'Excel file: needs the Drive API service', '', ''],
+       'admin,manager,office', true, 'Excel file, read in memory (read-only)', '', ''],
     ],
   },
   'Audit Log': {
@@ -808,7 +808,6 @@ function checkSetup() {
   lines.push(triggers.length ? '✓ weekly backup trigger installed' : '✗ weekly backup trigger missing – run setup()');
   const sync = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'syncSources'; });
   lines.push(sync.length ? '✓ hourly sync of company sheets installed' : '✗ hourly sync missing – run setup()');
-  lines.push(typeof Drive === 'undefined' ? '✗ Drive API service is off – needed to read the Excel files' : '✓ Drive API service is on');
   readTable_('Data Sources').forEach(function (d) {
     try { lines.push('✓ source ' + d.source_id + ' → ' + DriveApp.getFileById(String(d.file_id)).getName() + (d.last_result ? ' · last: ' + d.last_result : '')); }
     catch (err) { lines.push('✗ source ' + d.source_id + ' cannot be opened: ' + err.message); }
@@ -1043,18 +1042,114 @@ function parseSchedule_(values, ctx) {
 
 // ───────── sync ─────────
 
-/** Opens a source file. Excel files are converted to a temporary Google Sheet (needs the Drive API service). */
+/**
+ * Opens a source file READ-ONLY. Google Sheets are opened directly. Excel files are read in memory
+ * (unzipped and parsed here): nothing is created, converted or deleted in anyone's Drive.
+ */
 function openSource_(fileId) {
   const file = DriveApp.getFileById(fileId);
   if (file.getMimeType() === MimeType.GOOGLE_SHEETS) {
-    return { ss: SpreadsheetApp.openById(fileId), tempId: '', url: 'https://docs.google.com/spreadsheets/d/' + fileId + '/edit', native: true };
+    return { ss: SpreadsheetApp.openById(fileId), url: 'https://docs.google.com/spreadsheets/d/' + fileId + '/edit', native: true };
   }
-  if (typeof Drive === 'undefined') {
-    throw new Error(file.getName() + ' is an Excel file. Turn on the "Drive API" service in Apps Script (Services → +) so it can be read.');
-  }
-  const copy = Drive.Files.copy({ name: '_oa_temp_' + file.getName(), mimeType: MimeType.GOOGLE_SHEETS,
-                                  parents: [getSettings_().SYSTEM_FOLDER_ID] }, fileId);
-  return { ss: SpreadsheetApp.openById(copy.id), tempId: copy.id, url: file.getUrl(), native: false };
+  const tabs = readXlsx_(file.getBlob());
+  const ss = {
+    getName: function () { return file.getName(); },
+    getSheets: function () {
+      return tabs.map(function (t, i) {
+        return { getName: function () { return t.name; }, getSheetId: function () { return i; },
+                 getDataRange: function () { return { getValues: function () { return t.values; } }; } };
+      });
+    },
+  };
+  return { ss: ss, url: file.getUrl(), native: false };
+}
+
+function xmlText_(s) {
+  return String(s).replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'").replace(/&#(\d+);/g, function (m, n) { return String.fromCharCode(Number(n)); })
+    .replace(/&amp;/g, '&');
+}
+function colIndex_(ref) {
+  const letters = /^[A-Z]+/.exec(ref)[0];
+  let n = 0;
+  for (let i = 0; i < letters.length; i++) n = n * 26 + letters.charCodeAt(i) - 64;
+  return n - 1;
+}
+
+/** Minimal .xlsx reader: returns [{name, values}] with dates as Date objects. */
+function readXlsx_(blob) {
+  const parts = {};
+  Utilities.unzip(blob.setContentType('application/zip')).forEach(function (b) { parts[b.getName()] = b; });
+  const text = function (name) { return parts[name] ? parts[name].getDataAsString('UTF-8') : ''; };
+
+  const shared = [];
+  (text('xl/sharedStrings.xml').match(/<si>[\s\S]*?<\/si>/g) || []).forEach(function (si) {
+    shared.push(xmlText_((si.match(/<t[^>]*>[\s\S]*?<\/t>/g) || []).join('')));
+  });
+
+  // Which cell styles are dates (built-in formats 14–22 and 45–47, or custom formats using d/m/y).
+  const styles = text('xl/styles.xml');
+  const customDate = {};
+  (styles.match(/<numFmt [^>]*>/g) || []).forEach(function (f) {
+    const id = /numFmtId="(\d+)"/.exec(f), code = /formatCode="([^"]*)"/.exec(f);
+    if (id && code && /[dmy]/i.test(code[1].replace(/\[[^\]]*\]|"[^"]*"|&quot;[^&]*&quot;/g, ''))) customDate[id[1]] = true;
+  });
+  const xfs = /<cellXfs[^>]*>([\s\S]*?)<\/cellXfs>/.exec(styles);
+  const dateStyle = [];
+  ((xfs && xfs[1].match(/<xf [^>]*>/g)) || []).forEach(function (xf) {
+    const id = Number((/numFmtId="(\d+)"/.exec(xf) || [0, 0])[1]);
+    dateStyle.push((id >= 14 && id <= 22) || (id >= 45 && id <= 47) || !!customDate[id]);
+  });
+
+  // Tab names → sheet files, via workbook.xml and its relationships.
+  const rels = {};
+  (text('xl/_rels/workbook.xml.rels').match(/<Relationship [^>]*>/g) || []).forEach(function (r) {
+    rels[/Id="([^"]+)"/.exec(r)[1]] = /Target="([^"]+)"/.exec(r)[1].replace(/^\/?xl\//, '');
+  });
+  const out = [];
+  (text('xl/workbook.xml').match(/<sheet [^>]*>/g) || []).forEach(function (sh) {
+    const name = xmlText_(/name="([^"]*)"/.exec(sh)[1]);
+    const rid = /r:id="([^"]+)"/.exec(sh)[1];
+    const xml = text('xl/' + rels[rid]);
+    const grid = [];
+    let width = 0;
+    (xml.match(/<row[^>]*\/>|<row[^>]*>[\s\S]*?<\/row>/g) || []).forEach(function (row) {
+      const rm = / r="(\d+)"/.exec(row);
+      if (!rm) return;
+      const vals = [];
+      (row.match(/<c [^>]*\/>|<c [^>]*>[\s\S]*?<\/c>/g) || []).forEach(function (c) {
+        const ref = / r="([A-Z]+)\d+"/.exec(c);
+        if (!ref) return;
+        const t = (/ t="([^"]+)"/.exec(c) || [0, ''])[1];
+        const sIdx = Number((/ s="(\d+)"/.exec(c) || [0, 0])[1]);
+        const v = /<v>([\s\S]*?)<\/v>/.exec(c);
+        let val = '';
+        if (t === 's' && v) val = shared[Number(v[1])] || '';
+        else if (t === 'inlineStr') val = xmlText_((c.match(/<t[^>]*>[\s\S]*?<\/t>/g) || []).join(''));
+        else if (t === 'str' || t === 'e') val = v ? xmlText_(v[1]) : '';
+        else if (t === 'b') val = v ? v[1] === '1' : '';
+        else if (v) {
+          const num = Number(v[1]);
+          if (dateStyle[sIdx] && num > 0 && num < 2958466) {
+            const d = new Date(Math.round((num - 25569) * 86400000));       // Excel serial day → UTC
+            val = new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+          } else val = num;
+        }
+        vals[colIndex_(ref[1])] = val;
+      });
+      grid[Number(rm[1]) - 1] = vals;
+      width = Math.max(width, vals.length);
+    });
+    const values = [];
+    for (let r = 0; r < grid.length; r++) {
+      const src = grid[r] || [];
+      const row = [];
+      for (let c = 0; c < width; c++) row.push(src[c] === undefined ? '' : src[c]);
+      values.push(row);
+    }
+    out.push({ name: name, values: values });
+  });
+  return out;
 }
 
 /** Reads every active Data Source and rebuilds the search index. Runs every hour; you can also run it by hand. */
@@ -1064,7 +1159,7 @@ function syncSources() {
   const started = new Date();
   const items = [];
   const report = [];
-  const opened = {};   // one conversion per file, even if several sources read it
+  const opened = {};   // each file is read once, even if several sources use it
   try {
     const sheet = SpreadsheetApp.getActive().getSheetByName('Data Sources');
     const rows = readTable_('Data Sources');
@@ -1114,9 +1209,6 @@ function syncSources() {
     Logger.log('Search index rebuilt: ' + items.length + ' items\n' + report.join('\n'));
     return report;
   } finally {
-    Object.keys(opened).forEach(function (k) {
-      if (opened[k].tempId) { try { Drive.Files.remove(opened[k].tempId); } catch (e) { /* already gone */ } }
-    });
     lock.releaseLock();
   }
 }
