@@ -20,6 +20,7 @@
     syncing: false,
     filters: { q: '', tech: '', type: '', follow: false },
     index: null,                         // company-sheet rows the user may see { version, items, sources }
+    tables: null,                        // raw company-sheet tables for the Tables page
     search: '',
     week: null,                          // Monday of the week shown in Schedule
   };
@@ -164,6 +165,7 @@
         state.index = idx; await DB.setKv('index', idx);
       } catch (e) { /* keep the copy on this device */ }
     }
+    renderChrome();
   }
   async function loadIndexFromDevice() {
     if (state.index) return;
@@ -214,6 +216,7 @@
     $('#tabs').hidden = !signedIn;
     $('#tab-new').hidden = !can('report.create');
     $('#tab-sites').hidden = !can('site.create');
+    $('#tab-tables').hidden = !(state.index && state.index.tableCount > 0);
     const chip = $('#user-chip');
     chip.hidden = !signedIn;
     if (signedIn) {
@@ -671,41 +674,162 @@
   // ───────── schedule (week view from the K.E Schedule sheet) ─────────
   function mondayOf(d) { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; }
   const iso = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  // ───────── drawer (row / event details) ─────────
+  function openDrawer(title, bodyHtml) {
+    const d = $('#drawer');
+    d.innerHTML = '<div class="drawer-panel" role="dialog" aria-label="' + esc(title) + '">' +
+      '<div class="drawer-head"><h1>' + esc(title) + '</h1><button class="btn ghost" id="dr-close" type="button">Close</button></div>' +
+      bodyHtml + '</div>';
+    d.hidden = false;
+    const close = () => { d.hidden = true; d.innerHTML = ''; };
+    $('#dr-close').addEventListener('click', close);
+    d.addEventListener('click', (e) => { if (e.target === d) close(); }, { once: true });
+  }
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#drawer').hidden) { $('#drawer').hidden = true; } });
+
+  // ───────── calendar (Google-Calendar style, from the K.E Schedule sheet) ─────────
   function renderSchedule() {
     const items = ((state.index && state.index.items) || []);
-    if (!state.week) state.week = mondayOf(new Date());
-    const mon = state.week;
-    const days = Array.from({ length: 7 }, (_, i) => { const d = new Date(mon); d.setDate(mon.getDate() + i); return d; });
     const entries = items.filter((it) => it.kind === 'Schedule' && it.date);
-    const byDay = {}; entries.forEach((e) => { (byDay[e.date] = byDay[e.date] || []).push(e); });
-    const people = Array.from(new Set(entries.filter((e) => days.some((d) => iso(d) === e.date)).map((e) => e.person)));
-    const monthKey = iso(mon).slice(0, 7);
-    const due = items.filter((it) => /maintenance to be done/i.test(it.kind) && String(it.date).slice(0, 7) === monthKey);
-    const fmt = (d) => d.toLocaleDateString('en-CA', { weekday: 'short', month: 'short', day: 'numeric' });
+    if (!state.week) state.week = mondayOf(new Date());
+    const hidden = new Set(LS.get('calHidden', []));
+    const canon = (n) => String(n || '').trim().toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase());
+    entries.forEach((e) => { e.person = canon(e.person); });
+    const people = Array.from(new Set(entries.map((e) => e.person))).sort();
+    const visible = entries.filter((e) => !hidden.has(e.person));
+    const byDay = {}; visible.forEach((e) => { (byDay[e.date] = byDay[e.date] || []).push(e); });
+    Object.values(byDay).forEach((l) => l.sort((a, b) => String(a.person).localeCompare(String(b.person))));
+    const mode = LS.get('calView', 'week');
+    const anchor = state.week;
+    const monthStart = new Date(anchor.getFullYear(), anchor.getMonth() + (anchor.getDate() > 22 ? 1 : 0), 1);
+    const title = mode === 'month'
+      ? monthStart.toLocaleDateString('en-CA', { month: 'long', year: 'numeric' })
+      : (() => { const end = new Date(anchor); end.setDate(anchor.getDate() + 6);
+          return anchor.toLocaleDateString('en-CA', { month: 'short', day: 'numeric' }) + ' – ' +
+                 end.toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' }); })();
+    const evBtn = (e) => '<button class="ev" type="button" data-ev="' + esc(e.id) + '" style="--c:' + esc(personColor(e.person)) + '">' +
+      '<b>' + esc(e.person) + '</b>' + esc(e.title) + '</button>';
+    const todayIso = iso(new Date());
+    let body = '';
+    if (!entries.length) {
+      body = '<div class="empty">' + (state.index ? 'No calendar rows visible to you yet. Kaixin runs syncSources once to load them.' : 'Connect once to download the calendar.') + '</div>';
+    } else if (mode === 'month') {
+      const first = mondayOf(monthStart);
+      const cells = Array.from({ length: 42 }, (_, i) => { const d = new Date(first); d.setDate(first.getDate() + i); return d; });
+      const weeks = cells[35].getMonth() === monthStart.getMonth() ? 6 : 5;
+      body = '<div class="cal-month">' + ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d) => '<div class="dow">' + d + '</div>').join('') +
+        cells.slice(0, weeks * 7).map((d) => {
+          const list = byDay[iso(d)] || [];
+          return '<div class="cal-cell' + (d.getMonth() !== monthStart.getMonth() ? ' out' : '') + (iso(d) === todayIso ? ' today' : '') + '">' +
+            '<button class="daynum" type="button" data-day="' + iso(d) + '" aria-label="Open week of ' + esc(d.toDateString()) + '">' + d.getDate() + '</button>' +
+            list.slice(0, 3).map(evBtn).join('') +
+            (list.length > 3 ? '<button class="more" type="button" data-day="' + iso(d) + '">+' + (list.length - 3) + ' more</button>' : '') + '</div>';
+        }).join('') + '</div>';
+    } else {
+      const days = Array.from({ length: 7 }, (_, i) => { const d = new Date(anchor); d.setDate(anchor.getDate() + i); return d; });
+      body = '<div class="cal-week">' + days.map((d) => {
+        const list = byDay[iso(d)] || [];
+        return '<div class="cal-col' + (iso(d) === todayIso ? ' today' : '') + (list.length ? '' : ' empty-day') + '">' +
+          '<div class="cal-head"><small>' + d.toLocaleDateString('en-CA', { weekday: 'short' }) + '</small><span class="daynum">' + d.getDate() + '</span></div>' +
+          '<div class="cal-body">' + list.map(evBtn).join('') + '</div></div>';
+      }).join('') + '</div>';
+      const monthKey = iso(anchor).slice(0, 7);
+      const due = items.filter((it) => /maintenance to be done/i.test(it.kind) && String(it.date).slice(0, 7) === monthKey);
+      if (due.length) {
+        body += '<h2>Maintenance due in ' + esc(anchor.toLocaleDateString('en-CA', { month: 'long' })) + ' (' + due.length + ')</h2><div class="list">' +
+          due.map((it) => '<div class="card"><div class="card-top"><span class="chip">' + esc(it.kind.replace(/maintenance to be done/i, '').replace(/^\W+|\W+$/g, '') || 'Maintenance') + '</span>' +
+            (/completed|done/i.test(it.text) ? '<span class="chip t-ok">Done</span>' : '') + '</div>' +
+            '<div class="card-title">' + esc(it.addr) + '</div>' +
+            '<div class="card-body">' + esc(it.text.split('\n').slice(1).join(' · ')) + '</div>' + contactLine(it) + '</div>').join('') + '</div>';
+      }
+    }
     view().innerHTML =
-      '<div class="weeknav"><button class="btn ghost" id="wk-prev" type="button" aria-label="Previous week">←</button>' +
-        '<strong>' + esc(fmt(days[0])) + ' – ' + esc(fmt(days[6])) + '</strong>' +
-        '<button class="btn ghost" id="wk-next" type="button" aria-label="Next week">→</button>' +
-        '<button class="btn ghost" id="wk-today" type="button">Today</button></div>' +
-      (people.length ? '<div class="legend">' + people.map((p) => '<span class="who"><i style="background:' + esc(personColor(p)) + '"></i>' + esc(p) + '</span>').join('') + '</div>' : '') +
-      (!entries.length ? '<div class="empty">' + (state.index ? 'No schedule rows visible to you.' : 'Connect once to download the schedule.') + '</div>' : '') +
-      '<div class="week">' + days.map((d) => {
-        const list = (byDay[iso(d)] || []).slice().sort((a, b) => String(a.person).localeCompare(String(b.person)));
-        const today = iso(d) === iso(new Date());
-        if (!list.length && (d.getDay() === 0 || d.getDay() === 6)) return '';
-        return '<section class="day' + (today ? ' today' : '') + '"><h2>' + esc(fmt(d)) + (today ? ' · today' : '') + '</h2>' +
-          (list.length ? list.map((e) => '<a class="block" style="--c:' + esc(personColor(e.person)) + '" href="' + esc(e.url) + '" target="_blank" rel="noopener">' +
-            '<span class="block-who">' + esc(e.person) + '</span><span class="block-text">' + esc(e.text) + '</span></a>').join('')
-            : '<p class="muted">Nothing scheduled.</p>') + '</section>';
-      }).join('') + '</div>' +
-      (due.length ? '<h2>Maintenance due in ' + esc(mon.toLocaleDateString('en-CA', { month: 'long' })) + ' (' + due.length + ')</h2><div class="list">' +
-        due.map((it) => '<div class="card"><div class="card-top"><span class="chip">' + esc(it.kind.replace(/maintenance to be done/i, '').replace(/^\W+|\W+$/g, '') || 'Maintenance') + '</span>' +
-          (/completed|done/i.test(it.text) ? '<span class="chip t-ok">Done</span>' : '') + '</div>' +
-          '<div class="card-title">' + esc(it.addr) + '</div>' +
-          '<div class="card-body">' + esc(it.text.split('\n').slice(1).join(' · ')) + '</div>' + contactLine(it) + '</div>').join('') + '</div>' : '');
-    $('#wk-prev').addEventListener('click', () => { const d = new Date(state.week); d.setDate(d.getDate() - 7); state.week = d; renderSchedule(); });
-    $('#wk-next').addEventListener('click', () => { const d = new Date(state.week); d.setDate(d.getDate() + 7); state.week = d; renderSchedule(); });
-    $('#wk-today').addEventListener('click', () => { state.week = mondayOf(new Date()); renderSchedule(); });
+      '<div class="cal-bar"><button class="btn" id="cal-today" type="button">Today</button>' +
+        '<button class="btn ghost" id="cal-prev" type="button" aria-label="Previous">‹</button>' +
+        '<button class="btn ghost" id="cal-next" type="button" aria-label="Next">›</button>' +
+        '<h1>' + esc(title) + '</h1>' +
+        '<div class="seg" role="group" aria-label="View"><button type="button" data-mode="week" class="' + (mode === 'week' ? 'on' : '') + '">Week</button>' +
+        '<button type="button" data-mode="month" class="' + (mode === 'month' ? 'on' : '') + '">Month</button></div></div>' +
+      (people.length ? '<div class="cal-people">' + people.map((p) => '<label style="--c:' + esc(personColor(p)) + '"><input type="checkbox" data-person="' + esc(p) + '"' +
+        (hidden.has(p) ? '' : ' checked') + '>' + esc(p) + '</label>').join('') + '</div>' : '') + body;
+
+    const step = (dir) => {
+      const d = new Date(state.week);
+      if (mode === 'month') { const m = new Date(monthStart.getFullYear(), monthStart.getMonth() + dir, 1); state.week = mondayOf(m); if (state.week.getMonth() !== m.getMonth()) state.week.setDate(state.week.getDate() + 7); }
+      else { d.setDate(d.getDate() + 7 * dir); state.week = d; }
+      renderSchedule();
+    };
+    $('#cal-prev').addEventListener('click', () => step(-1));
+    $('#cal-next').addEventListener('click', () => step(1));
+    $('#cal-today').addEventListener('click', () => { state.week = mondayOf(new Date()); renderSchedule(); });
+    view().querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => { LS.set('calView', b.dataset.mode); renderSchedule(); }));
+    view().querySelectorAll('[data-person]').forEach((cb) => cb.addEventListener('change', () => {
+      const h = new Set(LS.get('calHidden', [])); if (cb.checked) h.delete(cb.dataset.person); else h.add(cb.dataset.person);
+      LS.set('calHidden', Array.from(h)); renderSchedule();
+    }));
+    view().querySelectorAll('[data-day]').forEach((b) => b.addEventListener('click', () => {
+      state.week = mondayOf(new Date(b.dataset.day + 'T12:00:00')); LS.set('calView', 'week'); renderSchedule();
+    }));
+    const byId = {}; visible.forEach((e) => { byId[e.id] = e; });
+    view().querySelectorAll('[data-ev]').forEach((b) => b.addEventListener('click', () => {
+      const e = byId[b.dataset.ev]; if (!e) return;
+      const related = e.key ? ((state.index && state.index.items) || []).filter((x) => x.key === e.key && x.id !== e.id).length : 0;
+      openDrawer(e.person + ' · ' + new Date(e.date + 'T12:00:00').toLocaleDateString('en-CA', { weekday: 'long', month: 'long', day: 'numeric' }),
+        '<div class="card-body" style="-webkit-line-clamp:unset;white-space:pre-wrap">' + esc(e.text) + '</div>' + contactLine(e) +
+        '<div class="actions"><a class="btn" href="' + esc(e.url) + '" target="_blank" rel="noopener">Open in sheet</a>' +
+        (related ? '<button class="btn ghost" type="button" id="dr-related">' + related + ' other records at this address</button>' : '') + '</div>');
+      const rel = $('#dr-related');
+      if (rel) rel.addEventListener('click', () => { $('#drawer').hidden = true; state.search = e.addr || e.title; location.hash = '#/search'; });
+    }));
+  }
+
+  // ───────── tables (console-style browser of the company sheets) ─────────
+  async function loadTables() {
+    if (state.tables && state.index && state.tables.version === state.index.version) return state.tables;
+    try { const c = await DB.getKv('tables'); if (c && state.index && c.version === state.index.version) { state.tables = c; return c; } } catch (e) { /* ignore */ }
+    try { const t = await api('tables'); state.tables = t; await DB.setKv('tables', t); return t; }
+    catch (e) { try { state.tables = (await DB.getKv('tables')) || null; } catch (x) { state.tables = null; } if (!state.tables) throw e; return state.tables; }
+  }
+  async function renderTables() {
+    view().innerHTML = '<div class="empty">Loading tables…</div>';
+    let data;
+    try { data = await loadTables(); } catch (e) { view().innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; return; }
+    const tables = (data && data.tables) || [];
+    if (!tables.length) { view().innerHTML = '<div class="empty">No tables visible to you.</div>'; return; }
+    const pick = LS.get('tableSel', '');
+    let cur = tables.find((t) => t.src + '|' + t.tab === pick) || tables.find((t) => /Maintenance Log/.test(t.tab)) || tables[0];
+    const groups = {}; tables.forEach((t) => { (groups[t.source] = groups[t.source] || []).push(t); });
+    let q = '';
+    const rowLink = (t, r) => t.native ? t.url + '#gid=' + t.gid + '&range=A' + r : t.url;
+    const draw = () => {
+      const qq = q.trim().toLowerCase();
+      const rows = qq ? cur.rows.filter((r) => r.c.join(' ').toLowerCase().indexOf(qq) >= 0) : cur.rows;
+      $('#tb-title').textContent = cur.tab;
+      $('#tb-count').textContent = rows.length + (qq ? ' of ' + cur.rows.length : '') + ' rows';
+      $('#tb-grid').innerHTML = '<table class="grid"><thead><tr><th class="rn">#</th>' + cur.headers.map((h) => '<th title="' + esc(h) + '">' + esc(h) + '</th>').join('') +
+        '</tr></thead><tbody>' + rows.slice(0, 500).map((r) => '<tr data-r="' + r.r + '"><td class="rn">' + r.r + '</td>' +
+          r.c.map((c) => '<td title="' + esc(c) + '">' + esc(c.replace(/\n/g, ' · ')) + '</td>').join('') + '</tr>').join('') + '</tbody></table>' +
+        (rows.length > 500 ? '<p class="muted" style="padding:8px 12px">Showing the first 500 rows. Filter to narrow down.</p>' : '');
+      $('#tb-grid').querySelectorAll('tr[data-r]').forEach((tr) => tr.addEventListener('click', () => {
+        const r = cur.rows.find((x) => String(x.r) === tr.dataset.r); if (!r) return;
+        openDrawer(cur.tab + ' · row ' + r.r, '<dl class="fields">' + cur.headers.map((h, i) => r.c[i] ? '<dt>' + esc(h) + '</dt><dd>' + esc(r.c[i]) + '</dd>' : '').join('') + '</dl>' +
+          (cur.url ? '<div class="actions"><a class="btn" href="' + esc(rowLink(cur, r.r)) + '" target="_blank" rel="noopener">Open in ' + (cur.native ? 'sheet' : 'Drive') + '</a></div>' : ''));
+      }));
+      view().querySelectorAll('.tbl-list button').forEach((b) => b.classList.toggle('on', b.dataset.t === cur.src + '|' + cur.tab));
+    };
+    view().innerHTML =
+      '<select class="tbl-pick" id="tb-pick" aria-label="Table">' + tables.map((t) => '<option value="' + esc(t.src + '|' + t.tab) + '"' +
+        (t === cur ? ' selected' : '') + '>' + esc(t.source + ' · ' + t.tab) + '</option>').join('') + '</select>' +
+      '<div class="tbl-shell"><aside class="tbl-list">' + Object.keys(groups).map((g) => '<h2>' + esc(g) + '</h2>' +
+        groups[g].map((t) => '<button type="button" data-t="' + esc(t.src + '|' + t.tab) + '"><span>' + esc(t.tab) + '</span><span>' + t.rows.length + '</span></button>').join('')).join('') +
+      '</aside><section class="tbl-main"><div class="tbl-tools"><strong id="tb-title"></strong><span class="muted mono" id="tb-count"></span>' +
+        '<input id="tb-q" type="search" placeholder="Filter rows…" aria-label="Filter rows"></div><div class="tbl-scroll" id="tb-grid"></div></section></div>' +
+      '<p class="muted">Read-only copy of the company sheets, refreshed every hour. Click a row to see all of it.</p>';
+    const choose = (key) => { cur = tables.find((t) => t.src + '|' + t.tab === key) || cur; LS.set('tableSel', key); $('#tb-pick').value = key; draw(); };
+    view().querySelectorAll('.tbl-list button').forEach((b) => b.addEventListener('click', () => choose(b.dataset.t)));
+    $('#tb-pick').addEventListener('change', (e) => choose(e.target.value));
+    $('#tb-q').addEventListener('input', (e) => { q = e.target.value; draw(); });
+    draw();
   }
 
   // ───────── router ─────────
@@ -716,8 +840,10 @@
     const parts = path.split('/').filter(Boolean);
     const tab = parts[0] || 'reports';
     document.querySelectorAll('.tabs a').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
+    view().classList.toggle('wide', tab === 'tables' || tab === 'schedule');
     if (tab === 'search') renderSearch();
     else if (tab === 'schedule') renderSchedule();
+    else if (tab === 'tables') renderTables();
     else if (tab === 'reports' && parts[1]) renderDetail(decodeURIComponent(parts[1]));
     else if (tab === 'new') renderNew(new URLSearchParams(query || ''));
     else if (tab === 'outbox') renderOutbox();

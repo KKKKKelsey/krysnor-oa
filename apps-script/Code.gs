@@ -18,6 +18,8 @@
  *   syncSources()      reads the company sheets now (it also runs by itself every hour)
  */
 
+const MONTH_ABBR = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+
 // ───────────────────────────── First-run seed data ─────────────────────────────
 
 const SEED = {
@@ -39,6 +41,8 @@ const SEED = {
       ['REPORT_ID_PREFIX', 'SR', 'Service report numbers look like SR-2026-0001'],
       ['UNLINKED_REPORTS_FOLDER', '06_Service Reports (no project)', 'Folder inside ROOT for photos of reports not tied to a project'],
       ['MAX_UPLOAD_MB', '15', 'Largest single file the OA page may upload'],
+      ['SITES_IMPORT_SOURCE', 'MAINT', 'Data Source whose maintenance tab feeds Sites and the Maintenance Log'],
+      ['SITES_IMPORT_TAB', '{YEAR} Maintenance-Commercial', 'Tab name to import ({YEAR} = this year). Add |{YEAR} Maintenance-Residential to include residential'],
     ],
   },
   'Roles': {
@@ -125,12 +129,16 @@ const SEED = {
   },
   'Sites': {
     headers: ['site_id', 'name', 'segment_id', 'address', 'city', 'contact_name', 'contact_phone',
-              'contact_email', 'notes', 'created_at', 'created_by'],
-    widths: [90, 220, 90, 260, 110, 150, 130, 200, 220, 150, 200], rows: [],
+              'contact_email', 'notes', 'created_at', 'created_by', 'site_contact', 'frequency', 'installation_no',
+              'contract_expiry', 'contract_type', 'contract_value', 'units_qty', 'scheduled_week', 'source', 'updated_at'],
+    widths: [90, 220, 90, 260, 110, 150, 130, 200, 220, 150, 200, 260, 100, 160, 110, 160, 100, 80, 100, 150, 150],
+    note: 'Fixed addresses. Rows with source = "Maintenance Record" are imported every hour from the company maintenance ' +
+          'record (Monthly / Quarterly / Semi-annual contracts) and kept up to date. Sites added by hand are never overwritten.',
+    rows: [],
   },
   'Units': {
-    headers: ['unit_id', 'site_id', 'label', 'elevator_type', 'capacity_lbs', 'speed_fpm', 'stops', 'notes'],
-    widths: [90, 90, 120, 130, 100, 90, 70, 220], rows: [],
+    headers: ['unit_id', 'site_id', 'label', 'elevator_type', 'capacity_lbs', 'speed_fpm', 'stops', 'notes', 'installation_no', 'source'],
+    widths: [90, 90, 120, 130, 100, 90, 70, 220, 120, 150], rows: [],
   },
   'Projects': {
     headers: ['project_id', 'type_id', 'segment_id', 'site_id', 'title', 'status', 'owner_email',
@@ -173,6 +181,13 @@ const SEED = {
        'admin,manager,office', true, 'Excel file, read in memory (read-only)', '', ''],
     ],
   },
+  'Maintenance Log': {
+    headers: ['site_id', 'address', 'frequency', 'installation_no', 'scheduled_week'].concat(MONTH_ABBR),
+    widths: [80, 260, 100, 160, 100, 140, 140, 140, 140, 140, 140, 140, 140, 140, 140, 140, 140],
+    note: 'Rebuilt every hour from the company Maintenance Record plus visits found in OA service reports (marked "OA"). ' +
+          'Do not edit here; Kyle can copy cells from this tab into the company sheet.',
+    rows: [],
+  },
   'Audit Log': {
     headers: ['time', 'email', 'action', 'target', 'detail'],
     widths: [150, 220, 160, 180, 460], rows: [],
@@ -213,6 +228,7 @@ const README = [
 
 const BACKUP_NAME_PREFIX = 'Krysnor OA Master backup ';
 const TEXT_COLUMNS = ['report_id', 'project_id', 'site_id', 'unit_id', 'arrived', 'left', 'contact_phone', 'phone',
+                      'installation_no', 'scheduled_week', 'contract_expiry',
                       'client_id', 'amends_report_id', 'folder_id', 'file_id'];
 
 // ───────────────────────────── Setup ─────────────────────────────
@@ -763,9 +779,19 @@ const ACTIONS = {
       return {
         version: idx.version,
         sources: readTable_('Data Sources').filter(function (x) { return allowed.indexOf(String(x.source_id)) >= 0; })
-          .map(function (x) { return { id: x.source_id, name: x.name, lastSync: x.last_sync }; }),
+          .map(function (x) { return { id: x.source_id, name: x.name, parser: x.parser, lastSync: x.last_sync }; }),
         items: idx.items.filter(function (it) { return allowed.indexOf(it.src) >= 0; }),
+        tableCount: (idx.tables || []).filter(function (t) { return allowed.indexOf(t.src) >= 0; }).length,
       };
+    },
+  },
+  tables: {
+    // Raw rows of the company sheets for the Tables page, only from sources this person may see.
+    permission: 'view.all',
+    run: function (user) {
+      const allowed = visibleSourceIds_(user);
+      const idx = loadIndex_();
+      return { version: idx.version, tables: (idx.tables || []).filter(function (t) { return allowed.indexOf(t.src) >= 0; }) };
     },
   },
   deleteReport: {
@@ -901,7 +927,10 @@ function firstDate_(row) {
 }
 
 function makeItem_(ctx, row, fields) {
-  const text = fields.text.replace(/\n{2,}/g, '\n').slice(0, 900);
+  const text = fields.text.split('\n')
+    .map(function (l) { return l.replace(/_{2,}/g, '').replace(/\b(Cell|Email|Office|Phone|Name|Site contact|Installation #)\s*:\s*(?=$|\b(Cell|Email|Office|Phone|Name)\s*:)/gi, '').trim(); })
+    .filter(function (l) { return l && !/^[^:]{1,30}:\s*$/.test(l); })
+    .join('\n').slice(0, 900);
   const c = extractContacts_(fields.raw || text);
   return {
     id: ctx.source.source_id + ':' + ctx.tab + ':' + row + (fields.suffix || ''),
@@ -993,7 +1022,8 @@ function parseSchedule_(values, ctx) {
     const joined = row.map(cellText_).join(' ');
     if (/to be done/i.test(joined)) break;
     const label = cellText_(row[0]);
-    if (label) person = label.replace(/\s+/g, ' ').trim();
+    // "CHRIS", "Chris " and "chris" are the same person: store one spelling.
+    if (label) person = label.replace(/\s+/g, ' ').trim().toLowerCase().replace(/\b[a-z]/g, function (ch) { return ch.toUpperCase(); });
     Object.keys(dateByCol).forEach(function (c) {
       const t = cellText_(row[c]);
       if (!t || !person || /^(office|off|holiday|vacation)\b[\s\d.]*$/i.test(t)) return;
@@ -1158,7 +1188,13 @@ function syncSources() {
   if (!lock.tryLock(5000)) { Logger.log('A sync is already running.'); return; }
   const started = new Date();
   const items = [];
+  const tables = [];
   const report = [];
+  const settings = getSettings_();
+  const year = started.getFullYear();
+  const importTab = new RegExp('^(' + String(settings.SITES_IMPORT_TAB || '{YEAR} Maintenance-Commercial')
+    .replace(/\{YEAR\}/g, String(year)) + ')$', 'i');
+  const importRaw = [];
   const opened = {};   // each file is read once, even if several sources use it
   try {
     const sheet = SpreadsheetApp.getActive().getSheetByName('Data Sources');
@@ -1181,7 +1217,14 @@ function syncSources() {
               rowUrl: function (row) { return book.native ? book.url + '#gid=' + gid + '&range=A' + row : book.url; },
             };
             const values = sh.getDataRange().getValues();
-            const found = String(src.parser).trim() === 'schedule' ? parseSchedule_(values, ctx) : parseTable_(values, ctx);
+            const isTable = String(src.parser).trim() !== 'schedule';
+            const found = isTable ? parseTable_(values, ctx) : parseSchedule_(values, ctx);
+            if (isTable) {
+              const snap = tableSnapshot_(values);
+              tables.push({ src: String(src.source_id), source: src.name, tab: tab, url: book.url, native: book.native, gid: gid,
+                            headers: snap.headers, rows: snap.rows });
+            }
+            if (String(src.source_id) === String(settings.SITES_IMPORT_SOURCE || 'MAINT') && importTab.test(tab)) importRaw.push(values);
             found.forEach(function (it) { items.push(it); });
             count += found.length;
           });
@@ -1195,10 +1238,25 @@ function syncSources() {
       const put = function (name, value) { const c = headers.indexOf(name); if (c >= 0) sheet.getRange(r, c + 1).setValue(value); };
       put('last_sync', started); put('last_result', count + ' items · ' + result);
     });
+    // Fixed maintenance addresses → Sites / Units, and the Maintenance Log tab (both in Kaixin's sheet only).
+    if (importRaw.length) {
+      try {
+        let contracts = [];
+        importRaw.forEach(function (v) { contracts = contracts.concat(parseMaintenanceContracts_(v)); });
+        const res = importMaintenanceSites_(contracts);
+        const log = buildMaintenanceLog_(contracts, year);
+        tables.push({ src: String(settings.SITES_IMPORT_SOURCE || 'MAINT'), source: 'Krysnor OA', tab: 'Maintenance Log ' + year + ' (with OA reports)',
+                      url: '', native: false, gid: 0, headers: log.header,
+                      rows: log.rows.map(function (r, i) { return { r: i + 2, c: r.map(cellText_) }; }) });
+        report.push('Sites: ' + res.added + ' added, ' + res.updated + ' updated, ' + res.units + ' units added; maintenance log ' + log.rows.length + ' rows');
+      } catch (err) {
+        report.push('Sites import FAILED: ' + err.message);
+      }
+    }
     // Version = fingerprint of the content, so phones only download the index again when something changed.
-    const body = JSON.stringify(items);
+    const body = JSON.stringify([items, tables]);
     const version = Utilities.base64EncodeWebSafe(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, body)).slice(0, 16);
-    const index = { version: version, builtAt: started.toISOString(), items: items };
+    const index = { version: version, builtAt: started.toISOString(), items: items, tables: tables };
     const folder = DriveApp.getFolderById(getSettings_().SYSTEM_FOLDER_ID);
     const existing = folder.getFilesByName(INDEX_FILE_NAME);
     const json = JSON.stringify(index);
@@ -1239,4 +1297,221 @@ function installSyncTrigger_() {
     .filter(function (t) { return t.getHandlerFunction() === 'syncSources'; })
     .forEach(function (t) { ScriptApp.deleteTrigger(t); });
   ScriptApp.newTrigger('syncSources').timeBased().everyHours(1).create();
+}
+
+// ───────────────────────────── Table snapshots, maintenance sites, maintenance log ─────────────────────────────
+
+/** Raw view of a tab for the Tables page: header row + data rows, empty columns removed. */
+function tableSnapshot_(values) {
+  let h = -1;
+  for (let r = 0; r < Math.min(values.length, 20) && h < 0; r++) {
+    const cells = values[r].map(cellText_);
+    const filled = cells.filter(String).length;
+    const hints = cells.filter(function (c) { return c.length < 45 && HEADER_HINT.test(c); }).length;
+    if (filled >= 3 && hints >= 2) h = r;
+  }
+  const start = h >= 0 ? h + 1 : 0;
+  const width = values.reduce(function (m, r) { return Math.max(m, r.length); }, 0);
+  const headers = [];
+  for (let c = 0; c < width; c++) {
+    const t = h >= 0 ? cellText_(values[h][c]).replace(/\s+/g, ' ') : '';
+    headers.push(t || String.fromCharCode(65 + (c % 26)) + (c >= 26 ? Math.floor(c / 26) : ''));
+  }
+  const rows = [];
+  for (let r = start; r < values.length; r++) {
+    const cells = [];
+    for (let c = 0; c < width; c++) cells.push(cellText_(values[r][c]).slice(0, 400));
+    if (!cells.some(String) || isTemplate_(cells.join(' '))) continue;
+    rows.push({ r: r + 1, c: cells });
+  }
+  const keep = [];
+  for (let c = 0; c < width; c++) {
+    if ((h >= 0 && cellText_(values[h][c])) || rows.some(function (row) { return row.c[c]; })) keep.push(c);
+  }
+  return {
+    headers: keep.map(function (c) { return headers[c]; }),
+    rows: rows.map(function (row) { return { r: row.r, c: keep.map(function (c) { return row.c[c]; }) }; }),
+  };
+}
+
+/** Value after a label inside a multi-line cell: "Expiry Date: 05/2028\nType: Full   Term: 3". */
+function labelValue_(text, label) {
+  const m = new RegExp('(?:^|\\n|\\s)' + label + '[ \\t]*:[ \\t]*([^\\n]*)', 'i').exec(String(text || ''));
+  if (!m) return '';
+  return m[1].split(/\s{2,}[A-Z#][A-Za-z #-]{1,20}:|\s+(?:Type|Term|Cell|Email|Office|Name)\s*:/)[0]
+    .replace(/_{2,}/g, '').trim();
+}
+
+
+/** Contracts in a "YYYY Maintenance-Commercial" tab, with their frequency section (Monthly / Quarterly / Semi-annual). */
+function parseMaintenanceContracts_(values) {
+  const out = [];
+  let cols = null;
+  let freq = 'Monthly';            // the first block in the sheet has no title: it is the monthly list
+  for (let r = 0; r < values.length; r++) {
+    const cells = values[r].map(cellText_);
+    const filled = cells.filter(String);
+    if (!filled.length) continue;
+    if (cells.some(function (c) { return /^location/i.test(c); }) && cells.some(function (c) { return /^contact$/i.test(c); })) {
+      cols = { months: [] };
+      cells.forEach(function (c, i) {
+        const u = c.toUpperCase().trim();
+        if (/^location/i.test(c)) cols.loc = i;
+        else if (/^contact$/i.test(c)) cols.contact = i;
+        else if (/contract/i.test(c)) cols.detail = i;
+        else if (/^value$/i.test(c)) cols.value = i;
+        else if (/^qty$/i.test(c)) cols.qty = i;
+        else if (/^type$/i.test(c)) cols.type = i;
+        else if (/schedul/i.test(c)) cols.week = i;
+        else if (MONTH_ABBR.indexOf(u) >= 0) cols.months[MONTH_ABBR.indexOf(u)] = i;
+      });
+      cols.after = Math.max.apply(null, cols.months.filter(function (x) { return x !== undefined; })) + 1;
+      continue;
+    }
+    if (filled.length === 1 && filled[0].length < 40 && !/:/.test(filled[0])) {
+      const f = filled[0].toLowerCase();
+      if (/inactive|no contract/.test(f)) freq = 'Inactive';
+      else if (/quarter/.test(f)) freq = 'Quarterly';
+      else if (/bi.?annual|semi/.test(f)) freq = 'Semi-annual';
+      else if (/annual|year/.test(f)) freq = 'Annual';
+      else if (/month/.test(f)) freq = 'Monthly';
+      continue;
+    }
+    if (!cols || freq === 'Inactive') continue;
+    const loc = cells[cols.loc] || '';
+    const address = (labelValue_(loc, 'Address') || (/address\s*:/i.test(loc) ? '' : loc.split('\n')[0])).replace(/\s+/g, ' ').trim();
+    if (!address || !addrKey_(address)) continue;
+    const contact = cells[cols.contact] || '';
+    const detail = cols.detail !== undefined ? cells[cols.detail] : '';
+    const type = cols.type !== undefined ? cells[cols.type] : '';
+    const notes = cells.slice(cols.after).filter(String).join('\n');
+    const phones = extractContacts_(contact).phones;
+    out.push({
+      row: r + 1, frequency: freq, address: address,
+      installation: labelValue_(loc, 'Installation\\s*#').replace(/\s+/g, ' '),
+      contactName: labelValue_(contact, 'Name'),
+      contactPhone: phones.length ? phones[0].replace(/(\d{3})(\d{3})(\d{4})/, '$1 $2 $3') : labelValue_(contact, 'Cell'),
+      contactEmail: (extractContacts_(contact).emails[0] || ''),
+      siteContact: isTemplate_(notes) ? '' : notes.replace(/\s+/g, ' ').replace(/_{2,}/g, '').trim(),
+      expiry: labelValue_(detail, 'Exp\\w*\\s*Date'), contractType: labelValue_(detail, 'Type'), term: labelValue_(detail, 'Term'),
+      value: cols.value !== undefined ? values[r][cols.value] : '',
+      qty: cols.qty !== undefined ? values[r][cols.qty] : '',
+      brand: labelValue_(type, 'Brand'), stops: labelValue_(type, '#\\s*of\\s*Stops'),
+      week: cols.week !== undefined ? cells[cols.week] : '',
+      months: MONTH_ABBR.map(function (m, i) { return cols.months[i] !== undefined ? cells[cols.months[i]] : ''; }),
+    });
+  }
+  return out;
+}
+
+/** Writes one object into a row of a tab by column name (only the given keys). */
+function writeRowFields_(sheet, headers, rowNumber, obj) {
+  Object.keys(obj).forEach(function (k) {
+    const c = headers.indexOf(k);
+    if (c >= 0) sheet.getRange(rowNumber, c + 1).setValue(obj[k]);
+  });
+}
+
+/**
+ * Adds the fixed maintenance-contract addresses to Sites (and their installation numbers to Units).
+ * Never deletes. Sites first created by this import are kept up to date; sites someone added by hand
+ * only get their empty fields filled in.
+ */
+function importMaintenanceSites_(contracts) {
+  const ss = SpreadsheetApp.getActive();
+  const sitesSheet = ss.getSheetByName('Sites');
+  const unitsSheet = ss.getSheetByName('Units');
+  const sHead = sitesSheet.getRange(1, 1, 1, sitesSheet.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
+  const uHead = unitsSheet.getRange(1, 1, 1, unitsSheet.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
+  const sites = readTable_('Sites');
+  const units = readTable_('Units');
+  const byKey = {};
+  sites.forEach(function (s, i) { const k = addrKey_(s.address || s.name); if (k && !byKey[k]) byKey[k] = { site: s, row: i + 2 }; });
+  let nextSite = sites.reduce(function (m, s) { return Math.max(m, Number(String(s.site_id).replace(/\D/g, '')) || 0); }, 0);
+  let nextUnit = units.reduce(function (m, u) { return Math.max(m, Number(String(u.unit_id).replace(/\D/g, '')) || 0); }, 0);
+  const now = new Date();
+  let added = 0, updated = 0, unitsAdded = 0;
+
+  contracts.forEach(function (c) {
+    const key = addrKey_(c.address);
+    const parts = c.address.split(',');
+    const fields = {
+      name: parts[0].replace(/\(.*?\)/g, '').trim() || c.address, segment_id: 'COM', address: c.address,
+      city: parts.length > 1 ? parts.slice(1).join(',').replace(/\b[A-Z]\d[A-Z]\s?\d[A-Z]\d\b/i, '').replace(/\bON\b/, '').replace(/[,\s]+$/, '').trim() : '',
+      contact_name: c.contactName, contact_phone: c.contactPhone, contact_email: c.contactEmail,
+      site_contact: c.siteContact, frequency: c.frequency, installation_no: c.installation,
+      contract_expiry: c.expiry, contract_type: [c.contractType, c.term ? 'Term ' + c.term : ''].filter(String).join(' · '),
+      contract_value: c.value, units_qty: c.qty, scheduled_week: c.week,
+    };
+    const hit = byKey[key];
+    let siteId;
+    if (!hit) {
+      siteId = 'S' + ('0000' + (++nextSite)).slice(-4);
+      appendRecord_('Sites', Object.assign({ site_id: siteId, created_at: now, created_by: 'Maintenance Record import',
+                                            source: 'Maintenance Record', updated_at: now }, fields));
+      byKey[key] = { site: Object.assign({ site_id: siteId, source: 'Maintenance Record' }, fields), row: sitesSheet.getLastRow() };
+      added++;
+    } else {
+      siteId = hit.site.site_id;
+      const imported = String(hit.site.source || '') === 'Maintenance Record';
+      const changes = {};
+      Object.keys(fields).forEach(function (k) {
+        const now_ = fields[k] === undefined || fields[k] === null ? '' : fields[k];
+        const was = hit.site[k] === undefined || hit.site[k] === null ? '' : hit.site[k];
+        if (String(now_) === String(was)) return;
+        if (imported ? now_ !== '' : was === '') changes[k] = now_;
+      });
+      if (Object.keys(changes).length) {
+        changes.updated_at = now;
+        writeRowFields_(sitesSheet, sHead, hit.row, changes);
+        Object.assign(hit.site, changes);
+        updated++;
+      }
+    }
+    // One unit per installation number.
+    (c.installation.match(/\d{4,}/g) || []).forEach(function (inst) {
+      if (units.some(function (u) { return u.site_id === siteId && String(u.installation_no) === inst; })) return;
+      const unit = { unit_id: 'U' + ('0000' + (++nextUnit)).slice(-4), site_id: siteId, label: 'Inst. #' + inst,
+                     elevator_type: c.brand, stops: c.stops, installation_no: inst, source: 'Maintenance Record' };
+      appendRecord_('Units', unit); units.push(unit); unitsAdded++;
+    });
+  });
+  void uHead;
+  return { added: added, updated: updated, units: unitsAdded };
+}
+
+/**
+ * Rebuilds the "Maintenance Log" tab: one row per contract, one column per month. Each month shows what the
+ * company sheet says, plus visits found in OA service reports (marked "OA"). Kyle can copy it back as needed.
+ */
+function buildMaintenanceLog_(contracts, year) {
+  const sh = SpreadsheetApp.getActive().getSheetByName('Maintenance Log');
+  const sites = readTable_('Sites');
+  const siteFor = function (address) {
+    const k = addrKey_(address);
+    return sites.filter(function (s) { return addrKey_(s.address || s.name) === k; })[0] || {};
+  };
+  const reports = visibleReports_().filter(function (r) {
+    return /maint/i.test(String(r.call_type)) && r.server_time instanceof Date && r.server_time.getFullYear() === year;
+  });
+  const rows = contracts.map(function (c) {
+    const site = siteFor(c.address);
+    const months = c.months.slice();
+    reports.forEach(function (r) {
+      const same = (site.site_id && r.site_id === site.site_id) || (addrKey_(r.site_name) && addrKey_(r.site_name) === addrKey_(c.address));
+      if (!same) return;
+      const m = r.server_time.getMonth();
+      const note = r.tech_name + ' ' + MONTH_ABBR[m].charAt(0) + MONTH_ABBR[m].slice(1).toLowerCase() + ' ' + r.server_time.getDate() +
+                   ' (OA ' + r.report_id + ')';
+      if (months[m].indexOf(r.report_id) < 0) months[m] = months[m] ? months[m] + '\n' + note : note;
+    });
+    return [site.site_id || '', c.address, c.frequency, c.installation, c.week].concat(months);
+  });
+  const header = ['site_id', 'address', 'frequency', 'installation_no', 'scheduled_week'].concat(MONTH_ABBR);
+  sh.clearContents();
+  sh.getRange(1, 1, 1, header.length).setValues([header]);
+  if (rows.length) sh.getRange(2, 1, rows.length, header.length).setValues(rows);
+  sh.getRange(1, header.length + 2).setValue('Built ' + Utilities.formatDate(new Date(), getSettings_().TIMEZONE || 'America/Toronto', 'yyyy-MM-dd HH:mm') +
+    ' from the company Maintenance Record + OA service reports. Rebuilt every hour — edit the company sheet, not this tab.');
+  return { header: header, rows: rows };
 }
