@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#14212B">
+  <title>Krysnor OA</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+  <script src="config.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+  <header class="bar">
+    <a class="brand" href="#/reports">
+      <img src="icons/icon-192.png" alt="" width="28" height="28">
+      <span id="oa-name">Krysnor OA</span>
+    </a>
+    <div class="bar-right">
+      <button id="sync-pill" class="pill" type="button" title="Sync now">
+        <span class="dot"></span><span id="sync-text">Offline</span>
+      </button>
+      <button id="user-chip" class="user-chip" type="button" hidden></button>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs" hidden>
+    <a href="#/reports" data-tab="reports">Reports</a>
+    <a href="#/new" data-tab="new" id="tab-new" hidden>New report</a>
+    <a href="#/outbox" data-tab="outbox" id="tab-outbox">Waiting <span id="outbox-count" class="count" hidden></span></a>
+    <a href="#/sites" data-tab="sites" id="tab-sites" hidden>Sites</a>
+  </nav>
+
+  <div id="banner" class="banner" hidden></div>
+  <main id="view" class="view" aria-live="polite"></main>
+
+  <div id="user-menu" class="sheet" hidden>
+    <div class="sheet-card">
+      <p class="muted" id="user-menu-text"></p>
+      <button type="button" class="btn ghost" id="sign-out">Sign out on this device</button>
+      <button type="button" class="btn ghost" id="close-menu">Close</button>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
