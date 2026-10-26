@@ -44,6 +44,14 @@ const SEED = {
       ['MAX_UPLOAD_MB', '15', 'Largest single file the OA page may upload'],
       ['SITES_IMPORT_SOURCE', 'MAINT', 'Data Source whose maintenance tab feeds Sites and the Maintenance Log'],
       ['SITES_IMPORT_TAB', '{YEAR} Maintenance-Commercial', 'Tab name to import ({YEAR} = this year). Add |{YEAR} Maintenance-Residential to include residential'],
+      ['HST_RATE', '13', 'Sales tax % added to maintenance invoice amounts on the This month checklist'],
+      ['MAINT_REMINDER_ROLES', 'office', 'Who gets the monthly maintenance reminders and invoice checklist (role_ids, comma-separated)'],
+      ['ORDER_STAGES', 'Asked supplier|Supplier quoted|Confirmed with supplier|Pickup / delivery set|Received', 'Steps of a material order, in order, separated by |'],
+      ['ORDER_CHASE_DAYS', '3', 'Remind when an order has waited this many days for a supplier quote or for our confirmation'],
+      ['ORDER_REMINDER_ROLES', 'office', 'Who gets order reminders'],
+      ['PROJECT_REMINDER_ROLES', 'office', 'Who gets project follow-up reminders (e.g. quote sent 7 days ago)'],
+      ['MAIL_LOOKBACK_DAYS', '3', 'The mailbox collector looks at mail from the last N days each run (already-saved mail is skipped)'],
+      ['MAIL_KEEP_DAYS_IN_OA', '120', 'The OA page shows mail records from the last N days (older ones stay in the Mail tab)'],
     ],
   },
   'Roles': {
@@ -75,6 +83,11 @@ const SEED = {
       ['quote.approve', 'Approve or send back a quote', true, true, false, false, false],
       ['order.submit', 'Submit a material order for approval', true, false, false, true, false],
       ['order.approve', 'Approve or send back a material order', true, true, false, false, false],
+      ['order.view', 'See material orders, supplier quotes and part prices', true, true, false, true, false],
+      ['order.edit', 'Open orders, move them through the steps, record part prices and suppliers', true, true, false, true, false],
+      ['project.view', 'See installation / repair projects and their steps', true, true, false, true, false],
+      ['project.edit', 'Move projects through their steps and edit them', true, true, false, true, false],
+      ['mail.view', 'See mail records collected from connected mailboxes (Kyle has agreed to his)', true, false, false, true, false],
     ],
   },
   'Users': {
@@ -145,8 +158,103 @@ const SEED = {
   },
   'Projects': {
     headers: ['project_id', 'type_id', 'segment_id', 'site_id', 'title', 'status', 'owner_email',
-              'folder_id', 'folder_url', 'created_at', 'created_by', 'notes'],
-    widths: [130, 70, 90, 90, 240, 130, 200, 260, 300, 150, 200, 220], rows: [],
+              'folder_id', 'folder_url', 'created_at', 'created_by', 'notes', 'stage', 'stage_at', 'site_name', 'addr_key',
+              'customer', 'contact', 'value', 'updated_at'],
+    widths: [130, 70, 90, 90, 240, 130, 200, 260, 300, 150, 200, 220, 180, 150, 220, 100, 180, 220, 90, 150], rows: [],
+  },
+  'Project Stages': {
+    headers: ['type_id', 'order', 'stage', 'segments', 'follow_up_days', 'reminder', 'notes'],
+    widths: [80, 60, 240, 90, 110, 260, 300],
+    note: 'Steps of each project type, in order. segments: ALL, COM or RES. follow_up_days: remind if a project sits in this ' +
+          'step longer than this (0 = never). The last step closes the project.',
+    rows: [
+      ['INS', 1, 'Lead / screening', 'ALL', 0, '', 'Bid or enquiry received; decide whether to go for it'],
+      ['INS', 2, 'Site assessment', 'ALL', 0, '', 'Visit, measure, photos'],
+      ['INS', 3, 'Quote sent', 'ALL', 7, 'Follow up the quote', 'Chris approves the quote before it goes out'],
+      ['INS', 4, 'Quote accepted', 'ALL', 0, '', 'Signed / deposit received'],
+      ['INS', 5, 'Materials ordered', 'ALL', 14, 'Check the material order', 'Link the orders to this project'],
+      ['INS', 6, 'Installation scheduled', 'ALL', 0, '', 'Workers and dates in the K.E Schedule'],
+      ['INS', 7, 'Installed', 'ALL', 0, '', ''],
+      ['INS', 8, 'TSSA inspection booked', 'COM', 14, 'Check the TSSA inspection date', 'Commercial only'],
+      ['INS', 9, 'TSSA report received', 'COM', 0, '', 'Save the report in 06_TSSA Reports & Issues'],
+      ['INS', 10, 'Maintenance contract sent', 'COM', 14, 'Follow up the maintenance contract', 'Custom contract per building'],
+      ['INS', 10, 'Maintenance package offered', 'RES', 14, 'Follow up the maintenance package', '6- or 12-month package'],
+      ['INS', 11, 'Closed', 'ALL', 0, '', ''],
+      ['REP', 1, 'Request received', 'ALL', 0, '', ''],
+      ['REP', 2, 'Site visit / diagnosis', 'ALL', 0, '', ''],
+      ['REP', 3, 'Quote sent', 'ALL', 7, 'Follow up the repair quote', 'Chris approves the quote before it goes out'],
+      ['REP', 4, 'Approved by customer', 'ALL', 0, '', ''],
+      ['REP', 5, 'Parts ordered', 'ALL', 14, 'Check the parts order', ''],
+      ['REP', 6, 'Repair done', 'ALL', 3, 'Send the invoice', ''],
+      ['REP', 7, 'Closed', 'ALL', 0, '', ''],
+    ],
+  },
+  'Project Events': {
+    headers: ['project_id', 'at', 'stage', 'by', 'note', 'mail_id'],
+    widths: [130, 150, 220, 200, 460, 160], rows: [],
+  },
+  'Orders': {
+    headers: ['order_id', 'created_at', 'created_by', 'title', 'supplier', 'site_id', 'site_name', 'addr_key', 'project_id', 'stage',
+              'stage_at', 'quote_amount', 'quote_ref', 'ready_date', 'delivery_method', 'notes', 'mail_thread_ids', 'updated_at'],
+    widths: [130, 150, 200, 280, 180, 80, 240, 100, 120, 180, 150, 110, 120, 110, 120, 300, 200, 150],
+    note: 'Material orders. stage follows Settings ORDER_STAGES. Every step is also written to Order Events with who/when.', rows: [],
+  },
+  'Order Events': {
+    headers: ['order_id', 'at', 'stage', 'by', 'note', 'amount', 'date_value', 'mail_id'],
+    widths: [130, 150, 180, 200, 420, 100, 110, 160], rows: [],
+  },
+  'Part Prices': {
+    headers: ['price_id', 'date', 'supplier', 'part', 'part_no', 'qty', 'unit', 'unit_price', 'total', 'currency', 'order_id',
+              'site_name', 'status', 'note', 'entered_by', 'entered_at'],
+    widths: [80, 100, 180, 280, 130, 60, 60, 100, 100, 70, 130, 220, 90, 260, 200, 150],
+    note: 'What we were quoted or paid for each part, when and by which supplier. status: quoted / bought.', rows: [],
+  },
+  'Suppliers': {
+    headers: ['name', 'contact', 'email', 'phone', 'email_domain', 'parts', 'notes', 'updated_at'],
+    widths: [200, 160, 220, 130, 160, 260, 300, 150],
+    note: 'email_domain (e.g. citielevator.com) lets the OA recognise supplier emails in Kyle\'s mailbox as order mail.', rows: [],
+  },
+  'Maintenance Plan': {
+    headers: ['site_id', 'address', 'frequency', 'due_months', 'due_months_override', 'basis', 'value', 'qty', 'contact_name',
+              'contact_email', 'contact_phone', 'done_months', 'year', 'updated_at'],
+    widths: [80, 280, 100, 200, 180, 220, 90, 60, 180, 220, 130, 200, 60, 150],
+    note: 'Rebuilt every hour from this year\'s company Maintenance Record. due_months is worked out from the visits in the record ' +
+          '(quarterly / semi-annual months follow last year\'s pattern). To correct a site, type months in due_months_override ' +
+          '(e.g. Mar,Jun,Sep,Dec): that column is kept. done_months = visits written in the record or OA maintenance reports.',
+    rows: [],
+  },
+  'Mailboxes': {
+    headers: ['mailbox', 'owner_name', 'key', 'active', 'last_ingest', 'last_count', 'note'],
+    widths: [220, 120, 300, 70, 150, 90, 420],
+    note: 'Mailboxes whose owner installed the read-only collector in their own Google account. key is a password the ' +
+          'collector sends; setup() fills it. active = FALSE stops accepting mail from that box.',
+    rows: [['pm@krysnorelevator.ca', 'Kyle', '', false, '', '', 'Kyle installs the collector in his own account, then Kaixin sets active = TRUE']],
+  },
+  'Mail Rules': {
+    headers: ['category', 'pattern', 'where', 'gmail_terms', 'create_task', 'assign_roles', 'active', 'notes'],
+    widths: [110, 420, 70, 360, 90, 110, 70, 300],
+    note: 'Which emails are kept and how they are labelled. pattern = regular expression (case-insensitive) checked on subject + ' +
+          'start of the message. gmail_terms = Gmail search words the collector uses. create_task = remind assign_roles under the bell.',
+    rows: [
+      ['Quote', '\\b(estimates?|quotes?|quotation|proposal|pricing|replace|replacement|repairs?)\\b', 'any',
+       '{estimate quote quotation proposal pricing replace replacement repair}', true, 'office', true, 'Quote requests and supplier quotes'],
+      ['Order', '\\b(purchase order|p\\.?o\\.? ?#|ordered|order|pick ?up|ready for pick|deliver(y|ed)|shipp(ed|ing)|tracking|back ?order|lead time|in stock)\\b', 'any',
+       '{order "purchase order" pickup "pick up" delivery shipped tracking backorder "lead time"}', false, 'office', true, 'Supplier emails are always Order'],
+      ['Installation', '\\b(install(ation)?|new elevator|new lift|permit|shop drawings?)\\b', 'any',
+       '{install installation permit "shop drawing"}', false, 'office', true, ''],
+      ['Maintenance', '\\b(maintenance|preventive|service call|breakdown|entrap\\w*|stuck|not working|out of service)\\b', 'any',
+       '{maintenance "service call" breakdown entrapment stuck "not working" "out of service"}', false, 'office', true, ''],
+      ['Inspection', '\\b(tssa|inspection|deficienc(y|ies))\\b', 'any', '{TSSA inspection deficiency deficiencies}', false, 'office', true, ''],
+      ['Invoice', '\\b(invoice|payment|remittance|overdue|e-?transfer|cheque)\\b', 'any', '{invoice payment remittance overdue e-transfer cheque}', false, 'office', true, ''],
+      ['Task', '\\b(urgent|asap|reminder|action required|deadline)\\b', 'any', '{urgent asap reminder "action required" deadline}', false, 'office', true, ''],
+    ],
+  },
+  'Mail': {
+    headers: ['mail_id', 'thread_id', 'mailbox', 'received_at', 'direction', 'from', 'to', 'subject', 'snippet', 'excerpt', 'categories',
+              'supplier', 'site_id', 'site_name', 'addr_key', 'amounts', 'attachments', 'link', 'ingested_at', 'linked_type', 'linked_id', 'status'],
+    widths: [160, 160, 180, 150, 70, 220, 220, 320, 300, 300, 160, 140, 80, 200, 100, 140, 200, 260, 150, 90, 120, 80],
+    note: 'Short records of emails that match Mail Rules (subject, sender, the first part of the message, a link back to Gmail). ' +
+          'Written by the read-only collector in the mailbox owner\'s account. The full email stays in their Gmail.', rows: [],
   },
   'Service Reports': {
     headers: ['report_id', 'server_time', 'device_time', 'tech_email', 'tech_name', 'project_id', 'site_id',
@@ -195,8 +303,9 @@ const SEED = {
     ],
   },
   'Tasks': {
-    headers: ['task_id', 'created_at', 'rule_id', 'type', 'title', 'ref_id', 'assign_roles', 'status', 'done_at', 'done_by', 'note'],
-    widths: [110, 150, 190, 90, 420, 130, 140, 80, 150, 200, 260],
+    headers: ['task_id', 'created_at', 'rule_id', 'type', 'title', 'ref_id', 'assign_roles', 'status', 'done_at', 'done_by', 'note',
+              'key', 'month', 'site_id', 'link', 'amount'],
+    widths: [110, 150, 190, 90, 420, 130, 140, 80, 150, 200, 260, 220, 80, 80, 200, 90],
     note: 'Created by Pipelines. status: open / done. Marked done in the OA by the person who handled it.',
     rows: [],
   },
@@ -259,7 +368,8 @@ const README = [
 const BACKUP_NAME_PREFIX = 'Krysnor OA Master backup ';
 const TEXT_COLUMNS = ['report_id', 'project_id', 'site_id', 'unit_id', 'arrived', 'left', 'contact_phone', 'phone', 'task_id', 'ref_id',
                       'installation_no', 'scheduled_week', 'contract_expiry',
-                      'client_id', 'amends_report_id', 'folder_id', 'file_id'];
+                      'client_id', 'amends_report_id', 'folder_id', 'file_id', 'order_id', 'price_id', 'part_no', 'mail_id',
+                      'thread_id', 'quote_ref', 'key', 'month', 'ready_date', 'date', 'date_value', 'due_months', 'due_months_override', 'done_months'];
 
 // ───────────────────────────── Setup ─────────────────────────────
 
@@ -272,11 +382,22 @@ function setup() {
   installBackupTrigger_();
   installSyncTrigger_();
   installNotificationTrigger_();
+  fillMailboxKeys_();
   protectAllTabs_(ss);
   audit_(Session.getEffectiveUser().getEmail(), 'setup', ss.getName(),
          'Tabs checked; folders ensured: ' + folders.length + '; weekly backup trigger installed');
   Logger.log('Krysnor OA setup finished. Next: fill in the Google emails for Chris, Duke and Kyle ' +
              'in the Users tab, then run checkSetup().');
+}
+
+/** Gives each mailbox a random key (a password the collector in that person's account sends with the mail). */
+function fillMailboxKeys_() {
+  const sh = SpreadsheetApp.getActive().getSheetByName('Mailboxes');
+  if (!sh) return;
+  const head = headersOf_('Mailboxes');
+  readTable_('Mailboxes').forEach(function (m, i) {
+    if (!String(m.key || '').trim()) writeRowFields_(sh, head, i + 2, { key: Utilities.getUuid().replace(/-/g, '') });
+  });
 }
 
 function buildTabs_(ss) {
@@ -571,6 +692,8 @@ function doPost(e) {
   let email = '';
   try {
     const body = JSON.parse(e.postData.contents);
+    // The read-only mail collector in Kyle's own account has no Google sign-in here: it sends its mailbox key instead.
+    if (body.action === 'ingestMail' || body.action === 'mailConfig') return json_({ ok: true, data: ingestMail_(body) });
     email = verifyIdToken_(body.token);
     const user = getUser_(email);
     if (!user) throw new Error('This Google account has no access to Krysnor OA. Ask Kaixin to add you.');
@@ -866,6 +989,32 @@ const ACTIONS = {
     permission: 'view.all',
     run: function (user, p) { return completeTask_(user, p); },
   },
+  work: {
+    // Orders, prices, projects and mail — each part only if this person's role may see it.
+    permission: 'view.all',
+    run: function (user) { return workData_(user); },
+  },
+  monthChecklist: {
+    permission: 'view.all',
+    run: function (user, p) { return monthChecklist_(user, p.month); },
+  },
+  setTask: {
+    permission: 'view.all',
+    run: function (user, p) { return p.done === false ? reopenTask_(user, p) : completeTask_(user, p); },
+  },
+  saveOrder: { permission: 'order.edit', run: function (user, p) { return saveOrder_(user, p); } },
+  orderStep: { permission: 'order.edit', run: function (user, p) { return orderStep_(user, p); } },
+  savePrices: { permission: 'order.edit', run: function (user, p) { return savePrices_(user, p); } },
+  saveSupplier: { permission: 'order.edit', run: function (user, p) { return saveSupplier_(user, p); } },
+  saveProject: {
+    permission: 'project.edit',
+    run: function (user, p) {
+      if (!p.project_id && !can_(user, 'project.create')) throw new Error('You do not have permission to open projects (project.create).');
+      return saveProject_(user, p);
+    },
+  },
+  projectStep: { permission: 'project.edit', run: function (user, p) { return projectStep_(user, p); } },
+  linkMail: { permission: 'mail.view', run: function (user, p) { return linkMail_(user, p); } },
   deleteReport: {
     permission: 'report.delete',
     run: function (user, p) { return deleteReport_(user, p); },
@@ -1271,6 +1420,7 @@ function syncSources() {
   const importTab = new RegExp('^(' + String(settings.SITES_IMPORT_TAB || '{YEAR} Maintenance-Commercial')
     .replace(/\{YEAR\}/g, String(year)) + ')$', 'i');
   const importRaw = [];
+  const contractsByYear = {};   // commercial maintenance contracts per year → Maintenance Plan
   const opened = {};   // each file is read once, even if several sources use it
   try {
     const sheet = SpreadsheetApp.getActive().getSheetByName('Data Sources');
@@ -1303,7 +1453,9 @@ function syncSources() {
             if (String(src.source_id) === String(settings.SITES_IMPORT_SOURCE || 'MAINT') && importTab.test(tab)) importRaw.push(values);
             const ym = /^(20\d{2}) Maintenance-/i.exec(tab);
             if (ym && String(src.source_id) === String(settings.SITES_IMPORT_SOURCE || 'MAINT')) {
-              const v = maintenanceVisits_(parseMaintenanceContracts_(values), Number(ym[1]), ctx);
+              const parsed = parseMaintenanceContracts_(values);
+              if (/commercial/i.test(tab)) contractsByYear[ym[1]] = (contractsByYear[ym[1]] || []).concat(parsed);
+              const v = maintenanceVisits_(parsed, Number(ym[1]), ctx);
               v.forEach(function (it) { items.push(it); });
               count += v.length;
             }
@@ -1331,6 +1483,9 @@ function syncSources() {
                       url: '', native: false, gid: 0, headers: log.header,
                       rows: log.rows.map(function (r, i) { return { r: i + 2, c: r.map(cellText_) }; }) });
         report.push('Sites: ' + res.added + ' added, ' + res.updated + ' updated, ' + res.units + ' units added; maintenance log ' + log.rows.length + ' rows');
+        const planRows = writeMaintenancePlan_(maintenancePlan_(contractsByYear, year), year);
+        const mt = ensureMonthTasks_();
+        report.push('Maintenance plan ' + planRows + ' sites; ' + mt.month + ': ' + mt.created + ' new reminders, ' + mt.closed + ' ticked off from the record');
       } catch (err) {
         report.push('Sites import FAILED: ' + err.message);
       }
@@ -1668,6 +1823,7 @@ function refreshNotifications() {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
+    try { ensureMonthTasks_(); ensureOrderTasks_(); ensureProjectTasks_(); } catch (err) { Logger.log('Reminders: ' + err.message); }
     let now = new Date();
     const last = PropertiesService.getScriptProperties().getProperty('NOTIFY_BATCH');
     if (last && new Date(last).getTime() >= now.getTime()) now = new Date(new Date(last).getTime() + 1000);  // batches never share a time
@@ -1713,10 +1869,36 @@ function notificationsFor_(user, batchAt) {
     .map(function (r) {
       const t = tasks[r.task_id] || {};
       return { task_id: r.task_id, title: r.title, ref_id: t.ref_id || '', type: t.type || '', created_at: t.created_at || '',
+               key: t.key || '', link: t.link || '', amount: t.amount || '',
                status: t.status || r.status_at_batch, done_by: t.done_by || '', done_at: t.done_at || '', note: t.note || '',
                can_complete: user.isAdmin || String(t.assign_roles || '').split(',').some(function (x) { return user.roles.indexOf(x.trim()) >= 0; }) };
     });
-  return { batch_at: want, batches: batches.slice(0, 90), items: items };
+  // The monthly maintenance list is one line per kind under the bell; the full checklist is on the This month page.
+  const groups = {};
+  const out = [];
+  items.forEach(function (it) {
+    const m = /^(MNT|MINV):(\d{4}-\d{2}):/.exec(it.key);
+    if (!m) { out.push(it); return; }
+    const g = groups[m[1] + m[2]] || (groups[m[1] + m[2]] = { task_id: '', group: true, type: it.type, ref_id: '', created_at: it.created_at,
+      link: '#/month?m=' + m[2], can_complete: false, total: 0, open: 0, month: m[2], kind: m[1] });
+    g.total++; if (it.status !== 'done') g.open++;
+    if (g.total === 1) out.push(g);
+  });
+  const allTasks = readTable_('Tasks');
+  Object.keys(groups).forEach(function (k) {
+    const g = groups[k];
+    const same = allTasks.filter(function (t) {
+      return String(t.key).indexOf(g.kind + ':' + g.month + ':') === 0 &&
+             (user.isAdmin || String(t.assign_roles || '').split(',').some(function (x) { return user.roles.indexOf(x.trim()) >= 0; }));
+    });
+    g.total = same.length;
+    g.open = same.filter(function (t) { return String(t.status) === 'open'; }).length;
+    const label = Utilities.formatDate(new Date(g.month + '-15T12:00:00'), 'America/Toronto', 'MMMM');
+    g.status = g.open ? 'open' : 'done';
+    g.title = g.kind === 'MNT' ? label + ' maintenance: ' + g.open + ' of ' + g.total + ' sites not done yet'
+                               : label + ' maintenance invoices: ' + g.open + ' of ' + g.total + ' not sent yet';
+  });
+  return { batch_at: want, batches: batches.slice(0, 90), items: out };
 }
 
 function completeTask_(user, p) {
@@ -1738,4 +1920,555 @@ function completeTask_(user, p) {
   } finally {
     lock.releaseLock();
   }
+}
+
+// ═════════════════════════════ Step 5: work tracking (orders, prices, projects, monthly maintenance, mail) ═════════════════════════════
+
+const ORDER_STAGES_DEFAULT = 'Asked supplier|Supplier quoted|Confirmed with supplier|Pickup / delivery set|Received';
+
+function tz_() { return getSettings_().TIMEZONE || 'America/Toronto'; }
+function ym_(d) { return Utilities.formatDate(d || new Date(), tz_(), 'yyyy-MM'); }
+function day_(d) { return d ? Utilities.formatDate(d instanceof Date ? d : new Date(d), tz_(), 'yyyy-MM-dd') : ''; }
+function headersOf_(name) {
+  const sh = SpreadsheetApp.getActive().getSheetByName(name);
+  return sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
+}
+function orderStages_() { return String(getSettings_().ORDER_STAGES || ORDER_STAGES_DEFAULT).split('|').map(function (s) { return s.trim(); }).filter(String); }
+function withLock_(fn) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try { return fn(); } finally { lock.releaseLock(); }
+}
+/** Updates the row whose idColumn = id with the given fields. Returns the merged record. */
+function updateRecord_(name, idColumn, id, fields) {
+  const all = readTable_(name);
+  const i = all.findIndex(function (r) { return String(r[idColumn]) === String(id); });
+  if (i < 0) throw new Error(name + ' ' + id + ' does not exist.');
+  writeRowFields_(SpreadsheetApp.getActive().getSheetByName(name), headersOf_(name), i + 2, fields);
+  return Object.assign(all[i], fields);
+}
+function siteById_(id) { return readTable_('Sites').filter(function (s) { return s.site_id === id; })[0] || null; }
+/** The site whose address matches this text (same rule as search: house number + street). */
+function siteForText_(text, sites) {
+  const k = addrKey_(text);
+  if (!k) return null;
+  return (sites || readTable_('Sites')).filter(function (s) { return !isTrue_(s.archived) && addrKey_(s.address || s.name) === k; })[0] || null;
+}
+function money_(v) { const n = Number(String(v === undefined ? '' : v).replace(/[$,\s]/g, '')); return isFinite(n) && String(v).trim() !== '' ? Math.round(n * 100) / 100 : ''; }
+
+// ───────── tasks (shared by every reminder) ─────────
+
+/** Creates each task whose key is new. Returns the tasks created. Call while holding the lock. */
+function ensureTasks_(tasks) {
+  if (!tasks.length) return [];
+  const existing = readTable_('Tasks');
+  const keys = {};
+  existing.forEach(function (t) { if (t.key) keys[t.key] = true; });
+  let max = 0;
+  existing.forEach(function (t) { max = Math.max(max, Number(String(t.task_id).replace(/\D/g, '')) || 0); });
+  const made = [];
+  tasks.forEach(function (t) {
+    if (t.key && keys[t.key]) return;
+    keys[t.key] = true;
+    const rec = Object.assign({ task_id: 'T' + ('00000' + (++max)).slice(-5), created_at: new Date(), status: 'open',
+                                rule_id: '', ref_id: '', done_at: '', done_by: '', note: '' }, t);
+    appendRecord_('Tasks', rec);
+    made.push(rec);
+  });
+  return made;
+}
+/** Closes open tasks matching a test (system closes, e.g. visit found in the maintenance record). */
+function closeTasks_(test, by, note) {
+  const sh = SpreadsheetApp.getActive().getSheetByName('Tasks');
+  const head = headersOf_('Tasks');
+  let n = 0;
+  readTable_('Tasks').forEach(function (t, i) {
+    if (String(t.status) !== 'open' || !test(t)) return;
+    writeRowFields_(sh, head, i + 2, { status: 'done', done_at: new Date(), done_by: by, note: note || '' });
+    n++;
+  });
+  return n;
+}
+function reopenTask_(user, p) {
+  return withLock_(function () {
+    const t = readTable_('Tasks').filter(function (x) { return x.task_id === p.task_id; })[0];
+    if (!t) throw new Error('Task ' + p.task_id + ' does not exist.');
+    const allowed = String(t.assign_roles || '').split(',').some(function (x) { return user.roles.indexOf(x.trim()) >= 0; });
+    if (!user.isAdmin && !allowed) throw new Error('This task is for ' + t.assign_roles + '.');
+    updateRecord_('Tasks', 'task_id', p.task_id, { status: 'open', done_at: '', done_by: '', note: '' });
+    audit_(user.email, 'task.reopen', t.task_id, t.title);
+    return { task_id: t.task_id, status: 'open' };
+  });
+}
+
+// ───────── monthly maintenance plan, reminders and invoice checklist ─────────
+
+/** Technician names in a month cell ("Duke June 9", "Jayden done Jan 12") — empty if it is a note, not a visit. */
+function visitNames_(cell) {
+  const t = String(cell || '').trim();
+  if (!t || /no response|not available|not access|no access|shutdown|won't|no mainten|cancel|^want|^will |^ask |let me know|call me|emailed|called|texted|follow up/i.test(t)) return [];
+  const names = [];
+  (t.replace(/[_\-&,\/]/g, ' ').match(/[A-Za-z][A-Za-z']*/g) || []).forEach(function (w) {
+    if (!/^[A-Z]/.test(w) || MONTH_WORDS.test(w) || VISIT_STOP.indexOf(w.toLowerCase()) >= 0 || w.length < 3) return;
+    const n = w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+    if (names.indexOf(n) < 0) names.push(n);
+  });
+  return names;
+}
+
+const FREQ_STEP = { 'Monthly': 1, 'Quarterly': 3, 'Semi-annual': 6, 'Annual': 12 };
+
+/**
+ * Which months each contract is due. Monthly = every month. Quarterly / semi-annual: the months that match the
+ * visits recorded this year and last year (e.g. Mar-Jun-Sep-Dec). Kaixin can override in due_months_override.
+ */
+function maintenancePlan_(byYear, year) {
+  const now = byYear[year] || [];
+  const prev = {};
+  (byYear[year - 1] || []).forEach(function (c) { prev[addrKey_(c.address)] = c; });
+  return now.map(function (c) {
+    const step = FREQ_STEP[c.frequency] || 0;
+    const done = [];
+    c.months.forEach(function (cell, m) { if (visitNames_(cell).length) done.push(m); });
+    let due = [], basis = '';
+    if (step === 1) { due = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]; basis = 'monthly'; }
+    else if (step) {
+      const counts = {};
+      const add = function (m) { counts[m % step] = (counts[m % step] || 0) + 1; };
+      done.forEach(add);
+      const old = prev[addrKey_(c.address)];
+      if (old) old.months.forEach(function (cell, m) { if (visitNames_(cell).length) add(m); });
+      let phase = 0, best = -1;
+      Object.keys(counts).forEach(function (k) { if (counts[k] > best || (counts[k] === best && Number(k) < phase)) { best = counts[k]; phase = Number(k); } });
+      for (let m = phase; m < 12; m += step) due.push(m);
+      basis = best > 0 ? 'from visits ' + (old ? (year - 1) + '–' : '') + year : 'no visits recorded yet: assumed';
+    }
+    return { address: c.address, frequency: c.frequency, due: due, done: done, basis: basis, value: c.value, qty: c.qty,
+             contact_name: c.contactName, contact_email: c.contactEmail, contact_phone: c.contactPhone, months: c.months };
+  });
+}
+
+/** Rewrites the "Maintenance Plan" tab, keeping Kaixin's due_months_override per address. */
+function writeMaintenancePlan_(plan, year) {
+  const sh = SpreadsheetApp.getActive().getSheetByName('Maintenance Plan');
+  const sites = readTable_('Sites');
+  const overrides = {};
+  readTable_('Maintenance Plan').forEach(function (r) { if (String(r.due_months_override || '').trim()) overrides[addrKey_(r.address)] = String(r.due_months_override).trim(); });
+  // OA maintenance reports also count as done.
+  const reports = visibleReports_().filter(function (r) {
+    return /maint/i.test(String(r.call_type)) && r.server_time instanceof Date && r.server_time.getFullYear() === year;
+  });
+  const names = function (ms) { return ms.map(function (m) { return MONTH_ABBR[m].charAt(0) + MONTH_ABBR[m].slice(1).toLowerCase(); }).join(','); };
+  const head = headersOf_('Maintenance Plan');
+  const rows = plan.map(function (p) {
+    const site = siteForText_(p.address, sites) || {};
+    const done = p.done.slice();
+    reports.forEach(function (r) {
+      const same = (site.site_id && r.site_id === site.site_id) || (addrKey_(r.site_name) && addrKey_(r.site_name) === addrKey_(p.address));
+      if (same && done.indexOf(r.server_time.getMonth()) < 0) done.push(r.server_time.getMonth());
+    });
+    done.sort(function (a, b) { return a - b; });
+    const rec = { site_id: site.site_id || '', address: p.address, frequency: p.frequency, due_months: names(p.due),
+                  due_months_override: overrides[addrKey_(p.address)] || '', basis: p.basis, value: p.value, qty: p.qty,
+                  contact_name: p.contact_name, contact_email: p.contact_email, contact_phone: p.contact_phone,
+                  done_months: names(done), year: year, updated_at: new Date() };
+    return head.map(function (h) { return rec[h] === undefined ? '' : rec[h]; });
+  });
+  sh.getRange(2, 1, Math.max(sh.getMaxRows() - 1, 1), head.length).clearContent();
+  if (rows.length) sh.getRange(2, 1, rows.length, head.length).setValues(rows);
+  return rows.length;
+}
+
+/** Stable id of a contract in task keys: its address key (stays the same if the site is removed and added back). */
+function planId_(r) { return addrKey_(r.address).replace(/\s/g, '-'); }
+
+function monthList_(text) {
+  return String(text || '').split(/[,\s]+/).map(function (m) { return MONTH_ABBR.indexOf(m.slice(0, 3).toUpperCase()); })
+    .filter(function (m) { return m >= 0; });
+}
+
+/** For the month (default: this month): one maintenance reminder + one invoice checkbox per site due. */
+function ensureMonthTasks_(when) {
+  const d = when || new Date();
+  const ym = ym_(d);
+  const m = Number(ym.slice(5, 7)) - 1;
+  const monthName = Utilities.formatDate(d, tz_(), 'MMMM');
+  const s = getSettings_();
+  const roles = s.MAINT_REMINDER_ROLES || 'office';
+  const hst = Number(s.HST_RATE || 13);
+  // Sites Kyle / Chris / Kaixin removed from the Sites list get no more reminders.
+  const removed = {};
+  readTable_('Sites').forEach(function (x) { if (isTrue_(x.archived)) removed[addrKey_(x.address || x.name)] = true; });
+  const plan = readTable_('Maintenance Plan').filter(function (r) { return Number(r.year) === Number(ym.slice(0, 4)) && !removed[addrKey_(r.address)]; });
+  const tasks = [];
+  plan.forEach(function (r) {
+    const due = monthList_(r.due_months_override || r.due_months);
+    if (due.indexOf(m) < 0) return;
+    const id = planId_(r);
+    const value = money_(r.value);
+    tasks.push({ key: 'MNT:' + ym + ':' + id, type: 'Maintenance', month: ym, site_id: r.site_id, assign_roles: roles,
+                 title: monthName + ' maintenance due · ' + r.address + ' (' + r.frequency + ')', link: r.site_id ? '#/sites/' + r.site_id : '' });
+    tasks.push({ key: 'MINV:' + ym + ':' + id, type: 'Maintenance invoice', month: ym, site_id: r.site_id, assign_roles: roles, amount: value,
+                 title: 'Send ' + monthName + ' maintenance invoice · ' + r.address +
+                        (value !== '' ? ' · $' + value.toFixed(2) + ' + HST ' + hst + '% = $' + (value * (1 + hst / 100)).toFixed(2) : ''),
+                 link: '#/month' });
+  });
+  const made = ensureTasks_(tasks);
+  // A visit written in the maintenance record (or an OA maintenance report) ticks the reminder off.
+  const doneKeys = {};
+  plan.forEach(function (r) { if (monthList_(r.done_months).indexOf(m) >= 0) doneKeys['MNT:' + ym + ':' + planId_(r)] = true; });
+  const closed = closeTasks_(function (t) { return doneKeys[t.key]; }, 'Maintenance Record', 'Visit recorded');
+  return { month: ym, created: made.length, closed: closed };
+}
+
+/** Everything for the "This month" page. */
+function monthChecklist_(user, ym) {
+  const month = /^\d{4}-\d{2}$/.test(String(ym || '')) ? ym : ym_();
+  const mine = function (t) { return user.isAdmin || String(t.assign_roles || '').split(',').some(function (x) { return user.roles.indexOf(x.trim()) >= 0; }); };
+  const all = readTable_('Tasks').filter(function (t) { return /^(MNT|MINV):/.test(String(t.key)) && mine(t); });
+  const months = unique_(all.map(function (t) { return String(t.month || String(t.key).split(':')[1]); })).sort().reverse();
+  const plan = {};
+  readTable_('Maintenance Plan').forEach(function (r) { plan[planId_(r)] = r; });
+  const items = all.filter(function (t) { return String(t.key).split(':')[1] === month; }).map(function (t) {
+    const p = plan[String(t.key).split(':')[2]] || {};
+    return { task_id: t.task_id, type: t.type, title: t.title, status: t.status, done_by: t.done_by, done_at: t.done_at, note: t.note,
+             site_id: t.site_id || p.site_id || '', address: p.address || '', frequency: p.frequency || '', amount: t.amount,
+             contact_name: p.contact_name || '', contact_email: p.contact_email || '', contact_phone: p.contact_phone || '',
+             due_months: p.due_months_override || p.due_months || '', basis: p.basis || '' };
+  });
+  return { month: month, months: months.length ? months : [month], hst: Number(getSettings_().HST_RATE || 13), items: items };
+}
+
+// ───────── orders, supplier quotes and part prices ─────────
+
+function saveOrder_(user, p) {
+  return withLock_(function () {
+    const site = p.site_id ? siteById_(p.site_id) : siteForText_(p.site_name);
+    const fields = {
+      title: clean_(p.title, 300), supplier: clean_(p.supplier, 200), site_id: site ? site.site_id : '',
+      site_name: clean_(p.site_name || (site ? site.name : ''), 300), project_id: clean_(p.project_id, 40),
+      delivery_method: clean_(p.delivery_method, 40), notes: clean_(p.notes, 3000), updated_at: new Date(),
+    };
+    fields.addr_key = addrKey_(fields.site_name) || (site ? addrKey_(site.address || site.name) : '');
+    if (!fields.title) throw new Error('What is being ordered? (title is required)');
+    if (p.order_id) {
+      const o = updateRecord_('Orders', 'order_id', p.order_id, fields);
+      audit_(user.email, 'order.update', p.order_id, fields.title);
+      return { order: o };
+    }
+    const stages = orderStages_();
+    const rec = Object.assign({ order_id: nextId_('Orders', 'order_id', 'ORD', 4), created_at: new Date(), created_by: user.email,
+                                stage: stages[0], stage_at: new Date(), mail_thread_ids: clean_(p.mail_thread_id, 200) }, fields);
+    appendRecord_('Orders', rec);
+    appendRecord_('Order Events', { order_id: rec.order_id, at: new Date(), stage: rec.stage, by: user.email,
+                                    note: clean_(p.first_note, 1000) || 'Order opened', mail_id: clean_(p.mail_id, 100) });
+    if (p.mail_id) linkMailRow_(p.mail_id, 'order', rec.order_id);
+    audit_(user.email, 'order.create', rec.order_id, rec.title);
+    return { order: rec };
+  });
+}
+
+/** Moves an order to a stage (or just adds a note) with the date/amount that stage needs. */
+function orderStep_(user, p) {
+  return withLock_(function () {
+    const o = readTable_('Orders').filter(function (x) { return x.order_id === p.order_id; })[0];
+    if (!o) throw new Error('Order ' + p.order_id + ' does not exist.');
+    const stages = orderStages_().concat(['Cancelled']);
+    const stage = clean_(p.stage, 60);
+    if (stage && stages.indexOf(stage) < 0) throw new Error('Unknown stage: ' + stage);
+    const fields = { updated_at: new Date() };
+    if (stage && stage !== o.stage) { fields.stage = stage; fields.stage_at = new Date(); }
+    if (p.quote_amount !== undefined && String(p.quote_amount).trim() !== '') fields.quote_amount = money_(p.quote_amount);
+    if (p.quote_ref) fields.quote_ref = clean_(p.quote_ref, 100);
+    if (p.ready_date) fields.ready_date = clean_(p.ready_date, 20);
+    if (p.delivery_method) fields.delivery_method = clean_(p.delivery_method, 40);
+    if (p.mail_thread_id) fields.mail_thread_ids = unique_(String(o.mail_thread_ids || '').split(',').concat([p.mail_thread_id])).join(',');
+    updateRecord_('Orders', 'order_id', o.order_id, fields);
+    const ev = { order_id: o.order_id, at: new Date(), stage: stage || '', by: user.email, note: clean_(p.note, 2000),
+                 amount: fields.quote_amount !== undefined ? fields.quote_amount : '', date_value: fields.ready_date || '', mail_id: clean_(p.mail_id, 100) };
+    appendRecord_('Order Events', ev);
+    if (p.mail_id) linkMailRow_(p.mail_id, 'order', o.order_id);
+    // Reminders for the stage it left are no longer needed.
+    if (fields.stage) closeTasks_(function (t) { return /^ORD/.test(String(t.key)) && String(t.key).split(':')[1] === o.order_id; }, user.email, 'Order moved to ' + fields.stage);
+    audit_(user.email, 'order.step', o.order_id, (stage || 'note') + (p.note ? ' · ' + p.note : ''));
+    return { order: Object.assign(o, fields), event: ev };
+  });
+}
+
+/** Part prices: one row per part line, so next time we know our cost without asking the supplier again. */
+function savePrices_(user, p) {
+  return withLock_(function () {
+    const lines = (p.lines || []).filter(function (l) { return clean_(l.part, 300) && String(l.unit_price || '').trim() !== ''; });
+    if (!lines.length) throw new Error('Add at least one part with a unit price.');
+    let max = 0;
+    readTable_('Part Prices').forEach(function (r) { max = Math.max(max, Number(String(r.price_id).replace(/\D/g, '')) || 0); });
+    const out = lines.map(function (l) {
+      const qty = Number(l.qty) || 1, unit = money_(l.unit_price);
+      if (unit === '') throw new Error('Unit price for "' + l.part + '" is not a number.');
+      const rec = { price_id: 'P' + ('00000' + (++max)).slice(-5), date: clean_(p.date || l.date, 20) || day_(new Date()),
+                    supplier: clean_(p.supplier || l.supplier, 200), part: clean_(l.part, 300), part_no: clean_(l.part_no, 100),
+                    qty: qty, unit: clean_(l.unit, 20) || 'ea', unit_price: unit, total: Math.round(qty * unit * 100) / 100,
+                    currency: clean_(p.currency, 5) || 'CAD', order_id: clean_(p.order_id, 40), site_name: clean_(p.site_name, 300),
+                    status: clean_(p.status || l.status, 20) || 'quoted', note: clean_(l.note, 500), entered_by: user.email, entered_at: new Date() };
+      appendRecord_('Part Prices', rec);
+      return rec;
+    });
+    audit_(user.email, 'prices.add', p.order_id || '', out.length + ' lines');
+    return { prices: out };
+  });
+}
+
+function saveSupplier_(user, p) {
+  return withLock_(function () {
+    const name = clean_(p.name, 200);
+    if (!name) throw new Error('Supplier name is required.');
+    const all = readTable_('Suppliers');
+    const hit = all.filter(function (s) { return norm_(s.name) === norm_(name); })[0];
+    const fields = { name: name, contact: clean_(p.contact, 200), email: clean_(p.email, 200), phone: clean_(p.phone, 50),
+                     email_domain: clean_(p.email_domain || String(p.email || '').split('@')[1] || '', 100).toLowerCase(),
+                     parts: clean_(p.parts, 500), notes: clean_(p.notes, 1000), updated_at: new Date() };
+    if (hit) { updateRecord_('Suppliers', 'name', hit.name, fields); return { supplier: Object.assign(hit, fields) }; }
+    appendRecord_('Suppliers', fields);
+    audit_(user.email, 'supplier.add', name, fields.email);
+    return { supplier: fields };
+  });
+}
+
+/** Daily: remind about orders that are waiting on someone. */
+function ensureOrderTasks_() {
+  const s = getSettings_();
+  const roles = s.ORDER_REMINDER_ROLES || 'office';
+  const chase = Number(s.ORDER_CHASE_DAYS || 3);
+  const stages = orderStages_();
+  const now = new Date();
+  const today = day_(now);
+  const tomorrow = day_(new Date(now.getTime() + 86400000));
+  const tasks = [];
+  readTable_('Orders').forEach(function (o) {
+    if (o.stage === 'Cancelled' || o.stage === stages[stages.length - 1]) return;
+    const since = o.stage_at instanceof Date ? o.stage_at : new Date(o.stage_at);
+    const days = Math.floor((now - since) / 86400000);
+    const where = o.site_name ? ' · ' + o.site_name : '';
+    if (o.stage === stages[0] && days >= chase) {
+      tasks.push({ key: 'ORDCHASE:' + o.order_id + ':' + day_(since), type: 'Order', assign_roles: roles, ref_id: o.order_id, link: '#/orders/' + o.order_id,
+                   title: 'No quote yet from ' + (o.supplier || 'supplier') + ' (' + days + ' days): ' + o.title + where });
+    }
+    if (o.stage === stages[1] && days >= chase) {
+      tasks.push({ key: 'ORDCONF:' + o.order_id + ':' + day_(since), type: 'Order', assign_roles: roles, ref_id: o.order_id, link: '#/orders/' + o.order_id,
+                   title: 'Quote received ' + days + ' days ago, not confirmed yet: ' + o.title + where });
+    }
+    const ready = day_(o.ready_date instanceof Date ? o.ready_date : (o.ready_date ? new Date(String(o.ready_date) + 'T12:00:00') : null));
+    if (ready && ready <= tomorrow) {
+      tasks.push({ key: 'ORDREADY:' + o.order_id + ':' + ready, type: 'Order', assign_roles: roles, ref_id: o.order_id, link: '#/orders/' + o.order_id,
+                   title: (o.delivery_method || 'Pickup / delivery') + (ready < today ? ' was due ' : ready === today ? ' today ' : ' tomorrow ') +
+                          ready + ': ' + o.title + ' (' + (o.supplier || 'supplier') + ')' + where });
+    }
+  });
+  return ensureTasks_(tasks).length;
+}
+
+// ───────── projects (installation flow) ─────────
+
+function projectStages_(typeId, segmentId) {
+  return readTable_('Project Stages').filter(function (r) {
+    const seg = String(r.segments || 'ALL').trim().toUpperCase();
+    return r.type_id === typeId && (seg === 'ALL' || seg === String(segmentId || '').toUpperCase());
+  }).sort(function (a, b) { return Number(a.order) - Number(b.order); });
+}
+
+function saveProject_(user, p) {
+  return withLock_(function () {
+    const title = clean_(p.title, 200);
+    if (!title) throw new Error('Project title is required.');
+    const types = readTable_('Project Types').map(function (t) { return t.type_id; });
+    if (types.indexOf(p.type_id) < 0) throw new Error('Pick a project type.');
+    const site = p.site_id ? siteById_(p.site_id) : siteForText_(p.site_name);
+    const fields = { title: title, site_id: site ? site.site_id : '', site_name: clean_(p.site_name || (site ? site.name : ''), 300),
+                     customer: clean_(p.customer, 200), contact: clean_(p.contact, 300), value: money_(p.value),
+                     notes: clean_(p.notes, 3000), updated_at: new Date() };
+    fields.addr_key = addrKey_(fields.site_name);
+    if (p.project_id) {
+      const pr = updateRecord_('Projects', 'project_id', p.project_id, fields);
+      audit_(user.email, 'project.update', p.project_id, title);
+      return { project: pr };
+    }
+    const type = readTable_('Project Types').filter(function (t) { return t.type_id === p.type_id; })[0];
+    const segment = p.segment_id || (site ? site.segment_id : 'COM');
+    const id = nextId_('Projects', 'project_id', String(type.id_prefix || type.type_id), 3);
+    const stages = projectStages_(p.type_id, segment);
+    let folderId = '', folderUrl = '';
+    try { const f = createProjectFolder_(p.type_id, segment, id, title); folderId = f.getId(); folderUrl = f.getUrl(); }
+    catch (err) { fields.notes = (fields.notes ? fields.notes + '\n' : '') + 'Folder not created: ' + err.message; }
+    const rec = Object.assign({ project_id: id, type_id: p.type_id, segment_id: segment, status: 'open', owner_email: user.email,
+                                folder_id: folderId, folder_url: folderUrl, created_at: new Date(), created_by: user.email,
+                                stage: stages.length ? stages[0].stage : '', stage_at: new Date() }, fields);
+    appendRecord_('Projects', rec);
+    appendRecord_('Project Events', { project_id: id, at: new Date(), stage: rec.stage, by: user.email, note: clean_(p.first_note, 1000) || 'Project opened' });
+    if (p.mail_id) linkMailRow_(p.mail_id, 'project', id);
+    audit_(user.email, 'project.create', id, title);
+    return { project: rec };
+  });
+}
+
+function projectStep_(user, p) {
+  return withLock_(function () {
+    const pr = readTable_('Projects').filter(function (x) { return x.project_id === p.project_id; })[0];
+    if (!pr) throw new Error('Project ' + p.project_id + ' does not exist.');
+    const names = projectStages_(pr.type_id, pr.segment_id).map(function (s) { return s.stage; }).concat(['Lost / cancelled']);
+    const stage = clean_(p.stage, 80);
+    if (stage && names.indexOf(stage) < 0) throw new Error('Unknown stage: ' + stage);
+    const fields = { updated_at: new Date() };
+    if (stage && stage !== pr.stage) {
+      fields.stage = stage; fields.stage_at = new Date();
+      if (stage === names[names.length - 2] || stage === 'Lost / cancelled') fields.status = 'closed';
+      else fields.status = 'open';
+    }
+    updateRecord_('Projects', 'project_id', pr.project_id, fields);
+    appendRecord_('Project Events', { project_id: pr.project_id, at: new Date(), stage: stage || '', by: user.email, note: clean_(p.note, 2000), mail_id: clean_(p.mail_id, 100) });
+    if (p.mail_id) linkMailRow_(p.mail_id, 'project', pr.project_id);
+    if (fields.stage) closeTasks_(function (t) { return /^PRJ/.test(String(t.key)) && String(t.key).split(':')[1] === pr.project_id; }, user.email, 'Moved to ' + fields.stage);
+    audit_(user.email, 'project.step', pr.project_id, (stage || 'note') + (p.note ? ' · ' + p.note : ''));
+    return { project: Object.assign(pr, fields) };
+  });
+}
+
+/** Daily: "quote sent 7 days ago, follow up" and any other stage with follow_up_days. */
+function ensureProjectTasks_() {
+  const roles = getSettings_().PROJECT_REMINDER_ROLES || 'office';
+  const now = new Date();
+  const tasks = [];
+  readTable_('Projects').forEach(function (pr) {
+    if (String(pr.status) === 'closed' || !pr.stage) return;
+    const st = projectStages_(pr.type_id, pr.segment_id).filter(function (s) { return s.stage === pr.stage; })[0];
+    const days = st ? Number(st.follow_up_days || 0) : 0;
+    if (!days) return;
+    const since = pr.stage_at instanceof Date ? pr.stage_at : new Date(pr.stage_at);
+    const age = Math.floor((now - since) / 86400000);
+    if (age < days) return;
+    tasks.push({ key: 'PRJFU:' + pr.project_id + ':' + pr.stage + ':' + day_(since), type: 'Follow up', assign_roles: roles,
+                 ref_id: pr.project_id, link: '#/projects/' + pr.project_id,
+                 title: (st.reminder || 'Follow up') + ': ' + pr.title + (pr.site_name ? ' · ' + pr.site_name : '') + ' (' + pr.stage + ' ' + age + ' days ago)' });
+  });
+  return ensureTasks_(tasks).length;
+}
+
+// ───────── mail from Kyle's mailbox (sent by the read-only collector in his own account) ─────────
+
+/** Called by the collector script. Not signed in with Google: checked with the mailbox key instead. */
+function ingestMail_(body) {
+  const box = readTable_('Mailboxes').filter(function (m) { return norm_(m.mailbox) === norm_(body.mailbox) && isTrue_(m.active); })[0];
+  if (!box || !String(box.key || '').trim() || String(box.key).trim() !== String(body.key || '').trim()) throw new Error('Mailbox not allowed.');
+  if (body.action === 'mailConfig') return { query: mailQuery_(), lookbackDays: Number(getSettings_().MAIL_LOOKBACK_DAYS || 3) };
+  return withLock_(function () {
+    const have = {};
+    readTable_('Mail').forEach(function (m) { have[String(m.mail_id)] = true; });
+    const rules = readTable_('Mail Rules').filter(function (r) { return isTrue_(r.active) && r.pattern; });
+    const suppliers = readTable_('Suppliers');
+    const sites = readTable_('Sites');
+    const orders = readTable_('Orders');
+    const added = [];
+    const tasks = [];
+    (body.messages || []).slice(0, 200).forEach(function (msg) {
+      const id = clean_(msg.id, 100);
+      if (!id || have[id]) return;
+      have[id] = true;
+      const subject = clean_(msg.subject, 300), from = clean_(msg.from, 300), excerpt = clean_(msg.excerpt, 2000);
+      const text = subject + '\n' + excerpt;
+      const cats = [];
+      rules.forEach(function (r) {
+        let re; try { re = new RegExp(String(r.pattern), 'i'); } catch (e) { return; }
+        const where = String(r.where || 'any').toLowerCase();
+        const hay = where === 'subject' ? subject : where === 'from' ? from : text;
+        if (re.test(hay) && cats.indexOf(r.category) < 0) cats.push(r.category);
+      });
+      const fromDomain = ((/@([\w.-]+)/.exec(from) || [])[1] || '').toLowerCase();
+      const supplier = suppliers.filter(function (s) { return s.email_domain && fromDomain && fromDomain.slice(-String(s.email_domain).length) === String(s.email_domain).toLowerCase(); })[0];
+      if (supplier && cats.indexOf('Order') < 0) cats.push('Order');
+      const site = siteForText_(text, sites);
+      const thread = clean_(msg.threadId, 100);
+      const order = orders.filter(function (o) { return thread && String(o.mail_thread_ids || '').split(',').indexOf(thread) >= 0; })[0];
+      const rec = {
+        mail_id: id, thread_id: thread, mailbox: norm_(body.mailbox), received_at: msg.date ? new Date(msg.date) : new Date(),
+        direction: msg.direction === 'out' ? 'out' : 'in', from: from, to: clean_(msg.to, 500), subject: subject,
+        snippet: clean_(msg.snippet, 300), excerpt: excerpt, categories: cats.join(','), supplier: supplier ? supplier.name : '',
+        site_id: site ? site.site_id : '', site_name: site ? site.name : '', addr_key: addrKey_(text),
+        amounts: unique_((text.match(/\$\s?\d[\d,]*(\.\d{2})?/g) || []).map(function (a) { return a.replace(/\s/g, ''); })).slice(0, 6).join(' '),
+        attachments: clean_((msg.attachments || []).join(', '), 500),
+        link: 'https://mail.google.com/mail/u/?authuser=' + encodeURIComponent(norm_(body.mailbox)) + '#all/' + thread,
+        ingested_at: new Date(), linked_type: order ? 'order' : '', linked_id: order ? order.order_id : '', status: 'new',
+      };
+      appendRecord_('Mail', rec);
+      added.push(rec);
+      if (order) appendRecord_('Order Events', { order_id: order.order_id, at: rec.received_at, stage: '', by: rec.mailbox,
+                                                 note: (rec.direction === 'out' ? 'Email sent: ' : 'Email from ' + from + ': ') + subject, mail_id: id });
+      rules.forEach(function (r) {
+        if (!isTrue_(r.create_task) || cats.indexOf(r.category) < 0 || rec.direction === 'out') return;
+        tasks.push({ key: 'MAIL:' + r.category + ':' + (thread || id), type: r.category + ' email', assign_roles: r.assign_roles || 'office',
+                     ref_id: id, link: rec.link, site_id: rec.site_id,
+                     title: r.category + ' email · ' + subject + ' — ' + from.replace(/<.*>/, '').trim() + (rec.site_name ? ' · ' + rec.site_name : '') });
+      });
+    });
+    ensureTasks_(tasks);
+    const sh = SpreadsheetApp.getActive().getSheetByName('Mailboxes');
+    const i = readTable_('Mailboxes').findIndex(function (m) { return norm_(m.mailbox) === norm_(body.mailbox); });
+    writeRowFields_(sh, headersOf_('Mailboxes'), i + 2, { last_ingest: new Date(), last_count: added.length });
+    return { added: added.length };
+  });
+}
+
+/** Gmail search the collector runs: the keyword terms of every active rule, plus supplier domains. */
+function mailQuery_() {
+  const terms = [];
+  readTable_('Mail Rules').forEach(function (r) { if (isTrue_(r.active) && r.gmail_terms) terms.push('(' + String(r.gmail_terms).trim() + ')'); });
+  readTable_('Suppliers').forEach(function (s) { if (s.email_domain) terms.push('from:' + String(s.email_domain).trim()); });
+  return '(' + (terms.length ? terms.join(' OR ') : 'quote OR estimate') + ') -category:promotions -category:social';
+}
+
+function linkMailRow_(mailId, type, id) {
+  const all = readTable_('Mail');
+  const i = all.findIndex(function (m) { return String(m.mail_id) === String(mailId); });
+  if (i < 0) return;
+  writeRowFields_(SpreadsheetApp.getActive().getSheetByName('Mail'), headersOf_('Mail'), i + 2, { linked_type: type, linked_id: id, status: 'linked' });
+  if (type === 'order' && all[i].thread_id) {
+    const o = readTable_('Orders').filter(function (x) { return x.order_id === id; })[0];
+    if (o) updateRecord_('Orders', 'order_id', id, { mail_thread_ids: unique_(String(o.mail_thread_ids || '').split(',').concat([all[i].thread_id])).join(',') });
+  }
+}
+
+function linkMail_(user, p) {
+  return withLock_(function () {
+    if (p.ignore) { updateRecordIf_('Mail', 'mail_id', p.mail_id, { status: 'ignored' }); return { mail_id: p.mail_id, status: 'ignored' }; }
+    if (['order', 'project', 'site'].indexOf(p.type) < 0) throw new Error('Link to an order, a project or a site.');
+    linkMailRow_(p.mail_id, p.type, clean_(p.id, 40));
+    audit_(user.email, 'mail.link', p.mail_id, p.type + ' ' + p.id);
+    return { mail_id: p.mail_id, linked_type: p.type, linked_id: p.id };
+  });
+}
+function updateRecordIf_(name, col, id, fields) { try { return updateRecord_(name, col, id, fields); } catch (e) { return null; } }
+
+/** One payload for the Orders / Prices / Projects / Mail pages (cached on the phone for offline viewing). */
+function workData_(user) {
+  const out = { stages: { order: orderStages_() }, permissions: user.permissions };
+  const iso = function (r) { const o = {}; Object.keys(r).forEach(function (k) { o[k] = r[k] instanceof Date ? r[k].toISOString() : r[k]; }); return o; };
+  if (can_(user, 'order.view')) {
+    out.orders = readTable_('Orders').map(iso);
+    out.orderEvents = readTable_('Order Events').map(iso);
+    out.prices = readTable_('Part Prices').map(iso);
+    out.suppliers = readTable_('Suppliers').map(iso);
+  }
+  if (can_(user, 'project.view')) {
+    out.projects = readTable_('Projects').map(iso);
+    out.projectEvents = readTable_('Project Events').map(iso);
+    out.projectStages = readTable_('Project Stages').map(iso);
+  }
+  if (can_(user, 'mail.view')) {
+    const days = Number(getSettings_().MAIL_KEEP_DAYS_IN_OA || 120);
+    const since = Date.now() - days * 86400000;
+    out.mail = readTable_('Mail').filter(function (m) { return new Date(m.received_at).getTime() >= since; }).map(function (m) {
+      const o = iso(m); return o;
+    }).sort(function (a, b) { return String(b.received_at).localeCompare(String(a.received_at)); }).slice(0, 600);
+    out.mailboxes = readTable_('Mailboxes').map(function (b) { return { mailbox: b.mailbox, owner: b.owner_name, active: isTrue_(b.active), last_ingest: b.last_ingest instanceof Date ? b.last_ingest.toISOString() : b.last_ingest }; });
+  }
+  out.syncedAt = new Date().toISOString();
+  return out;
 }

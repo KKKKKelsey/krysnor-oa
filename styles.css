@@ -283,3 +283,83 @@ a.card:hover, button.card:hover { border-color: var(--navy); }
 .cal-legend { margin-top: 10px; }
 .cal-legend .ev { display: inline-block; width: auto; padding: 1px 6px; margin: 0 2px; font-size: 12px; vertical-align: middle; }
 #cal-jump { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit; font-size: 13px; }
+
+/* ── flow chart (orders, projects) ── */
+.flow { list-style: none; padding: 0; margin: 14px 0 6px; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 0; counter-reset: s; }
+.flow li { position: relative; display: grid; justify-items: center; text-align: center; gap: 3px; padding: 0 4px; font-size: 12.5px; min-width: 0; }
+.flow li::before { content: ""; position: absolute; top: 13px; left: -50%; width: 100%; height: 2px; background: var(--line); z-index: 0; }
+.flow li:first-child::before { display: none; }
+.flow li.done::before, .flow li.now::before { background: var(--navy); }
+.flow .dot { position: relative; z-index: 1; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 12px;
+  border: 2px solid var(--line); background: var(--surface); color: var(--ink-2); }
+.flow li.done .dot { background: var(--navy); border-color: var(--navy); color: var(--navy-ink); }
+.flow li.now .dot { border-color: var(--navy); color: var(--navy); box-shadow: 0 0 0 4px var(--navy-soft); }
+.flow b { font-weight: 600; overflow-wrap: anywhere; }
+.flow li.todo b { color: var(--ink-2); font-weight: 500; }
+.flow small { color: var(--ink-2); overflow-wrap: anywhere; }
+.flow.stopped { opacity: .6; }
+@media (max-width: 640px) {
+  .flow { grid-auto-flow: row; grid-auto-columns: auto; gap: 10px; }
+  .flow li { grid-template-columns: 28px 1fr; justify-items: start; text-align: left; column-gap: 10px; padding: 0; }
+  .flow li .dot { grid-row: span 2; }
+  .flow li::before { top: -10px; left: 13px; width: 2px; height: 12px; }
+}
+.step-form { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.timeline { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; font-size: 13.5px; }
+.timeline li { padding-left: 14px; border-left: 2px solid var(--line); overflow-wrap: anywhere; }
+.timeline a { color: var(--focus); }
+
+/* ── orders board ── */
+.toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.toolbar input { flex: 1 1 220px; width: auto; }
+.board { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; align-items: start; }
+.lane { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 0 10px 10px; min-width: 0; }
+.lane h2 { margin: 10px 0 8px; }
+.lane-empty { margin: 0; }
+.page-head .btn { margin-left: auto; }
+.page-head .btn + .btn { margin-left: 0; }
+.page-head select { width: auto; margin-left: auto; }
+.page-head .check-row { margin-left: auto; font-size: 13px; color: var(--ink-2); }
+
+/* ── tables of prices ── */
+.tscroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+.ptable { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ptable th, .ptable td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.ptable th { background: var(--panel); font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-2); white-space: nowrap; }
+.ptable tr:last-child td { border-bottom: 0; }
+.prow { cursor: pointer; }
+.prow:hover td { background: var(--panel); }
+.phist td { background: var(--panel); }
+.phist ul { margin: 0; padding-left: 18px; display: grid; gap: 3px; }
+.phist a { color: var(--focus); }
+.pline { display: grid; grid-template-columns: 2fr 1fr 70px 100px; gap: 6px; }
+@media (max-width: 560px) { .pline { grid-template-columns: 1fr 1fr; } }
+
+/* ── this month checklist ── */
+.checklist { list-style: none; margin: 0 0 8px; padding: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.checklist li { display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--surface); flex-wrap: wrap; }
+.checklist li:last-child { border-bottom: 0; }
+.checklist label { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; min-width: 0; flex: 1 1 260px; }
+.checklist input { width: 20px; height: 20px; margin: 1px 0 0; accent-color: var(--navy); flex: none; }
+.checklist label span { display: grid; gap: 2px; min-width: 0; }
+.checklist b { font-weight: 600; overflow-wrap: anywhere; }
+.checklist small { color: var(--ink-2); }
+.checklist li.is-done b { text-decoration: line-through; color: var(--ink-2); font-weight: 500; }
+.check-links { display: flex; gap: 12px; font-size: 13px; padding-left: 30px; }
+.check-links a { color: var(--focus); text-decoration: none; }
+.meter { display: inline-block; width: 80px; height: 6px; border-radius: 3px; background: var(--line); vertical-align: middle; margin-left: 6px; overflow: hidden; }
+.meter i { display: block; height: 100%; background: var(--navy); }
+
+/* ── mail ── */
+.chips-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 10px 0 12px; }
+.chips-row select { width: auto; margin-left: auto; min-height: 34px; padding: 4px 8px; }
+.fchip { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 4px 10px; cursor: pointer; font-weight: 600; font-size: 12.5px; color: var(--ink-2); }
+.fchip.on { background: var(--navy); border-color: var(--navy); color: var(--navy-ink); }
+.fchip small { opacity: .75; font-weight: 500; }
+.mail-card { cursor: pointer; }
+.mail-card:hover { border-color: var(--ink-2); }
+.chip.c-quote { background: var(--navy-soft); color: var(--navy); }
+.chip.c-order { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+.chip.c-maintenance, .chip.c-inspection { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+.search-box { margin: 8px 0; }
+input[type=date] { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); min-height: 40px; }

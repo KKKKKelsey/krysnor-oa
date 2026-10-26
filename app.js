@@ -23,7 +23,9 @@
     tables: null,                        // raw company-sheet tables for the Tables page
     search: '',
     week: null,                          // Monday of the week shown in Schedule
-    notes: LS.get('notes', null),        // latest 9:00 notification batch { batch_at, batches, items }
+    notes: LS.get('notes', null),
+    work: null,                          // orders, prices, projects, mail (only the parts this role may see)
+    month: LS.get('month', null),        // this month's maintenance + invoice checklist        // latest 9:00 notification batch { batch_at, batches, items }
   };
 
   // ───────── helpers ─────────
@@ -167,6 +169,7 @@
       } catch (e) { /* keep the copy on this device */ }
     }
     await loadNotes();
+    await loadWork();
     renderChrome();
   }
   async function loadNotes() {
@@ -227,6 +230,11 @@
     $('#tabs').hidden = !signedIn;
     $('#tab-new').hidden = !can('report.create');
     renderBell();
+    $('#tab-month').hidden = !(state.month && state.month.items && state.month.items.length);
+    $('#tab-orders').hidden = !can('order.view');
+    $('#tab-prices').hidden = !can('order.view');
+    $('#tab-projects').hidden = !can('project.view');
+    $('#tab-mail').hidden = !can('mail.view');
     $('#tab-tables').hidden = !(state.index && state.index.tableCount > 0);
     const chip = $('#user-chip');
     chip.hidden = !signedIn;
@@ -255,11 +263,13 @@
     const done = i.status === 'done';
     return '<div class="card note' + (done ? ' done' : '') + '" data-task="' + esc(i.task_id) + '">' +
       '<div class="card-top"><span class="chip">' + esc(i.type || 'Task') + '</span>' +
-        (done ? '<span class="chip t-ok">Done</span>' : '<span class="chip t-warn">Open</span>') + '<span class="ticket">' + esc(i.task_id) + '</span></div>' +
+        (done ? '<span class="chip t-ok">Done</span>' : '<span class="chip t-warn">Open</span>') + (i.task_id ? '<span class="ticket">' + esc(i.task_id) + '</span>' : '') + '</div>' +
       '<div class="card-title">' + esc(i.title) + '</div>' +
       '<div class="card-meta">' + (i.created_at ? 'Since ' + esc(fmtDate(i.created_at)) : '') +
         (done ? ' · done by ' + esc(String(i.done_by).split('@')[0]) + ' ' + esc(fmtDate(i.done_at)) + (i.note ? ' · ' + esc(i.note) : '') : '') + '</div>' +
-      '<div class="actions">' + (i.ref_id ? '<a class="btn ghost" href="#/reports/' + encodeURIComponent(i.ref_id) + '">Open ' + esc(i.ref_id) + '</a>' : '') +
+      '<div class="actions">' + (i.link && /^https?:/.test(i.link) ? '<a class="btn ghost" href="' + esc(i.link) + '" target="_blank" rel="noopener">Open email</a>'
+          : i.link ? '<a class="btn ghost" href="' + esc(i.link) + '">' + (i.group ? 'Open checklist' : 'Open') + '</a>'
+          : i.ref_id ? '<a class="btn ghost" href="#/reports/' + encodeURIComponent(i.ref_id) + '">Open ' + esc(i.ref_id) + '</a>' : '') +
         (live && !done && i.can_complete ? '<input type="text" class="note-in" placeholder="Note, e.g. invoice #" aria-label="Note">' +
           '<button class="btn primary" type="button" data-done="' + esc(i.task_id) + '">Mark done</button>' : '') + '</div></div>';
   }
@@ -677,11 +687,13 @@
           (it.person ? '<span class="chip" style="border-color:' + esc(personColor(it.person)) + '">' + esc(it.person) + '</span>' : '') + '</div>' +
           '<div class="card-body">' + esc(it.internal ? it.title + ' · ' + it.text.split('\n')[0] : it.text.split('\n')[0]) + '</div></button>').join('') + '</div>' : '') +
       (records.length ? '<h2>Records for ' + year + ' · ' + records.length + '</h2><div class="list">' + records.map(resultCard).join('') + '</div>' : '') +
+      siteWorkHtml(s) +
       (can('site.delete') ? '<details class="danger-zone"><summary>Remove from Sites</summary><form class="stack" id="arch-f">' +
         '<label class="field"><span>Reason (required)</span><input id="arch-reason" type="text" required placeholder="e.g. Contract ended Dec 2026"></label>' +
         '<p class="muted">The site leaves the list but nothing is deleted: its rows stay in the master sheet and the hourly import will not add it back. Adding the same name again restores it.</p>' +
         '<p class="muted" id="arch-err" role="alert"></p><div class="actions"><button class="btn danger" type="submit">Remove site</button></div></form></details>' : '');
     view().querySelectorAll('[data-year]').forEach((b) => b.addEventListener('click', () => { state.siteYear = b.dataset.year; renderSiteDetail(id); }));
+    bindMailCards(view());
     const byId = {}; inYear.forEach((it) => { byId[it.id] = it; });
     view().querySelectorAll('[data-it]').forEach((b) => b.addEventListener('click', () => {
       const it = byId[b.dataset.it]; if (!it) return;
@@ -1009,22 +1021,472 @@
     draw();
   }
 
+  // ═════════ work: This month · Orders · Prices · Projects · Mail ═════════
+  const W = () => state.work || {};
+  async function loadWork() {
+    try { state.work = await api('work'); await DB.setKv('work', state.work); }
+    catch (e) { if (!state.work) { try { state.work = (await DB.getKv('work')) || null; } catch (x) { state.work = null; } } }
+    try { state.month = await api('monthChecklist', {}); LS.set('month', state.month); } catch (e) { /* keep the copy on this device */ }
+  }
+  async function loadWorkFromDevice() {
+    if (!state.work) { try { state.work = (await DB.getKv('work')) || null; } catch (e) { state.work = null; } }
+  }
+  const dShort = (v) => { if (!v) return ''; const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? v + 'T12:00:00' : v); return isNaN(d) ? String(v) : d.toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' }); };
+  const daysSince = (v) => Math.max(0, Math.floor((Date.now() - new Date(v).getTime()) / 86400000));
+  const moneyFmt = (v) => (v === '' || v === null || v === undefined || isNaN(Number(v))) ? '' : '$' + Number(v).toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const who = (email) => { const u = state.data && state.data.users; const n = String(email || '').split('@')[0]; return n ? n.charAt(0).toUpperCase() + n.slice(1) : ''; };
+  const siteById = (id) => state.data && state.data.sites.find((s) => s.site_id === id);
+  function siteOptions(selected) {
+    const sites = ((state.data && state.data.sites) || []).slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    return '<option value="">— pick a site —</option>' + sites.map((s) => '<option value="' + esc(s.site_id) + '"' + (s.site_id === selected ? ' selected' : '') + '>' +
+      esc(s.name) + (s.city ? ' · ' + esc(s.city) : '') + '</option>').join('') + '<option value="__other"' + (selected === '__other' ? ' selected' : '') + '>Other address…</option>';
+  }
+  function siteLink(id, name) {
+    const s = id && siteById(id);
+    return s ? '<a href="#/sites/' + encodeURIComponent(s.site_id) + '">' + esc(s.name) + '</a>' : esc(name || '');
+  }
+  /** A flow chart of steps: done steps filled, current one ringed, later ones hollow. */
+  function flowHtml(steps, current, info) {
+    const at = steps.indexOf(current);
+    const closed = current === 'Cancelled' || current === 'Lost / cancelled';
+    return '<ol class="flow' + (closed ? ' stopped' : '') + '">' + steps.map((s, i) => {
+      const cls = closed ? (info[s] ? 'done' : 'todo') : i < at ? 'done' : i === at ? 'now' : 'todo';
+      return '<li class="' + cls + '"><span class="dot" aria-hidden="true">' + (cls === 'done' ? '✓' : i + 1) + '</span><b>' + esc(s) + '</b>' +
+        (info[s] ? '<small>' + info[s] + '</small>' : '') + '</li>';
+    }).join('') + '</ol>' + (closed ? '<p class="chip flag">' + esc(current) + '</p>' : '');
+  }
+  function mailRow(m) {
+    return '<div class="card mail-card" data-mail="' + esc(m.mail_id) + '"><div class="card-top">' +
+      String(m.categories || '').split(',').filter(Boolean).map((c) => '<span class="chip c-' + esc(slug(c)) + '">' + esc(c) + '</span>').join('') +
+      (m.direction === 'out' ? '<span class="chip">Sent</span>' : '') + (m.status === 'ignored' ? '<span class="chip fix">Ignored</span>' : '') +
+      '<span class="muted">' + esc(fmtDate(m.received_at)) + '</span></div>' +
+      '<div class="card-title">' + esc(m.subject || '(no subject)') + '</div>' +
+      '<div class="card-meta"><span>' + esc(String(m.direction === 'out' ? 'To ' + m.to : m.from).replace(/<[^>]*>/g, '').trim()) + '</span>' +
+        (m.site_id ? '<span>' + siteLink(m.site_id, m.site_name) + '</span>' : '') + (m.amounts ? '<span class="mono">' + esc(m.amounts) + '</span>' : '') +
+        (m.linked_type === 'order' ? '<a href="#/orders/' + encodeURIComponent(m.linked_id) + '">' + esc(m.linked_id) + '</a>' : '') +
+        (m.linked_type === 'project' ? '<a href="#/projects/' + encodeURIComponent(m.linked_id) + '">' + esc(m.linked_id) + '</a>' : '') + '</div>' +
+      '<div class="card-body">' + esc(m.excerpt || m.snippet) + '</div></div>';
+  }
+  function bindMailCards(root) {
+    root.querySelectorAll('[data-mail]').forEach((c) => c.addEventListener('click', (e) => {
+      if (e.target.closest('a')) return;
+      openMail(c.dataset.mail);
+    }));
+  }
+  function openMail(id) {
+    const m = (W().mail || []).find((x) => x.mail_id === id); if (!m) return;
+    const orders = (W().orders || []).filter((o) => o.stage !== 'Received' && o.stage !== 'Cancelled');
+    const projects = (W().projects || []).filter((p) => p.status !== 'closed');
+    openDrawer(m.subject || '(no subject)',
+      '<p class="muted">' + esc(fmtDate(m.received_at)) + ' · ' + esc(m.direction === 'out' ? 'sent to ' + m.to : 'from ' + m.from) + '</p>' +
+      '<div class="card-body" style="-webkit-line-clamp:unset;white-space:pre-wrap">' + esc(m.excerpt || m.snippet) + '</div>' +
+      (m.attachments ? '<p class="muted">Attachments: ' + esc(m.attachments) + '</p>' : '') +
+      '<div class="actions"><a class="btn primary" href="' + esc(m.link) + '" target="_blank" rel="noopener">Open in Gmail</a></div>' +
+      (can('order.edit') ? '<h2>File this email</h2><div class="stack">' +
+        '<div class="actions"><a class="btn" href="#/orders/new?mail=' + encodeURIComponent(m.mail_id) + '">New order from this email</a>' +
+        (can('project.create') ? '<a class="btn" href="#/projects/new?mail=' + encodeURIComponent(m.mail_id) + '">New project</a>' : '') + '</div>' +
+        (orders.length ? '<label class="field"><span>Add to an order</span><select id="ml-order"><option value="">—</option>' +
+          orders.map((o) => '<option value="' + esc(o.order_id) + '">' + esc(o.order_id + ' · ' + o.title + (o.supplier ? ' (' + o.supplier + ')' : '')) + '</option>').join('') + '</select></label>' : '') +
+        (projects.length && can('project.edit') ? '<label class="field"><span>Add to a project</span><select id="ml-project"><option value="">—</option>' +
+          projects.map((p) => '<option value="' + esc(p.project_id) + '">' + esc(p.project_id + ' · ' + p.title) + '</option>').join('') + '</select></label>' : '') +
+        '<div class="actions"><button class="btn" type="button" id="ml-save">Save</button>' +
+        (m.status !== 'ignored' ? '<button class="btn ghost" type="button" id="ml-ignore">Not work-related</button>' : '') + '</div>' +
+        '<p class="muted" id="ml-err" role="alert"></p></div>' : ''));
+    const save = $('#ml-save');
+    if (save) save.addEventListener('click', async () => {
+      const o = $('#ml-order') && $('#ml-order').value, p = $('#ml-project') && $('#ml-project').value;
+      if (!o && !p) { $('#ml-err').textContent = 'Pick an order or a project.'; return; }
+      try {
+        if (o) await api('orderStep', { order_id: o, mail_id: m.mail_id, mail_thread_id: m.thread_id, note: 'Email: ' + m.subject });
+        if (p) await api('projectStep', { project_id: p, mail_id: m.mail_id, note: 'Email: ' + m.subject });
+        await loadWork(); toast('Filed'); $('#drawer').hidden = true; route();
+      } catch (e) { $('#ml-err').textContent = e.message; }
+    });
+    const ig = $('#ml-ignore');
+    if (ig) ig.addEventListener('click', async () => {
+      try { await api('linkMail', { mail_id: m.mail_id, ignore: true }); m.status = 'ignored'; $('#drawer').hidden = true; route(); }
+      catch (e) { $('#ml-err').textContent = e.message; }
+    });
+  }
+
+  // ───────── This month: maintenance due + invoice checklist ─────────
+  async function renderMonth(params) {
+    let mc = state.month;
+    const want = params.get('m');
+    if (want && (!mc || mc.month !== want)) {
+      view().innerHTML = '<div class="empty">Loading…</div>';
+      try { mc = await api('monthChecklist', { month: want }); } catch (e) { view().innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; return; }
+    }
+    if (!mc) { view().innerHTML = '<div class="empty">Connect once to download this month\'s list.</div>'; return; }
+    drawMonth(mc);
+  }
+  function drawMonth(mc) {
+    const label = (ym) => new Date(ym + '-15T12:00:00').toLocaleDateString('en-CA', { month: 'long', year: 'numeric' });
+    const maint = mc.items.filter((i) => i.type === 'Maintenance').sort((a, b) => a.address.localeCompare(b.address));
+    const inv = mc.items.filter((i) => i.type === 'Maintenance invoice').sort((a, b) => a.address.localeCompare(b.address));
+    const doneN = (l) => l.filter((i) => i.status === 'done').length;
+    const bar = (l) => '<span class="meter" role="img" aria-label="' + doneN(l) + ' of ' + l.length + '"><i style="width:' + (l.length ? Math.round(doneN(l) / l.length * 100) : 0) + '%"></i></span>';
+    const hst = Number(mc.hst || 13);
+    const total = inv.reduce((s, i) => s + (Number(i.amount) || 0), 0);
+    const row = (i, isInv) => {
+      const subj = 'Krysnor Elevator – ' + label(mc.month).split(' ')[0] + ' maintenance invoice – ' + i.address;
+      return '<li class="check' + (i.status === 'done' ? ' is-done' : '') + '"><label><input type="checkbox" data-task="' + esc(i.task_id) + '"' + (i.status === 'done' ? ' checked' : '') + '>' +
+        '<span><b>' + esc(i.address) + '</b>' +
+        '<small>' + esc(i.frequency) + (i.due_months && i.frequency !== 'Monthly' ? ' · ' + esc(i.due_months) : '') +
+          (isInv && i.amount !== '' ? '<br><span class="mono">' + moneyFmt(i.amount) + ' + HST = ' + moneyFmt(Number(i.amount) * (1 + hst / 100)) + '</span>' : '') +
+          (i.status === 'done' ? '<br>✓ ' + esc(i.done_by === 'Maintenance Record' ? 'visit in the maintenance record' : who(i.done_by) + ' ' + dShort(i.done_at)) : '') + '</small></span></label>' +
+        '<span class="check-links">' + (i.site_id ? '<a href="#/sites/' + encodeURIComponent(i.site_id) + '">History</a>' : '') +
+          (isInv && i.contact_email ? '<a href="mailto:' + esc(i.contact_email) + '?subject=' + encodeURIComponent(subj) + '">Email ' + esc(i.contact_name || i.contact_email) + '</a>' : '') + '</span></li>';
+    };
+    view().innerHTML = '<div class="page-head"><h1>' + esc(label(mc.month)) + '</h1>' +
+      (mc.months.length > 1 ? '<select id="m-pick" aria-label="Month">' + mc.months.map((m) => '<option value="' + m + '"' + (m === mc.month ? ' selected' : '') + '>' + esc(label(m)) + '</option>').join('') + '</select>' : '') + '</div>' +
+      '<p class="muted">From the company Maintenance Record: every monthly site, and the quarterly / semi-annual sites due this month. A visit written in the record ticks the first list by itself.</p>' +
+      (mc.items.length ? '' : '<div class="empty">No maintenance list for your role this month.</div>') +
+      (inv.length ? '<h2>Invoices to send · ' + doneN(inv) + ' of ' + inv.length + ' ' + bar(inv) + '</h2>' +
+        '<p class="muted mono">Total ' + moneyFmt(total) + ' + HST ' + hst + '% = ' + moneyFmt(total * (1 + hst / 100)) + '</p>' +
+        '<ul class="checklist">' + inv.map((i) => row(i, true)).join('') + '</ul>' : '') +
+      (maint.length ? '<h2>Maintenance visits · ' + doneN(maint) + ' of ' + maint.length + ' done ' + bar(maint) + '</h2>' +
+        '<ul class="checklist">' + maint.map((i) => row(i, false)).join('') + '</ul>' : '');
+    const pick = $('#m-pick'); if (pick) pick.addEventListener('change', () => { location.hash = '#/month?m=' + pick.value; });
+    view().querySelectorAll('[data-task]').forEach((cb) => cb.addEventListener('change', async () => {
+      const it = mc.items.find((x) => x.task_id === cb.dataset.task);
+      cb.disabled = true;
+      try {
+        await api('setTask', { task_id: it.task_id, done: cb.checked });
+        it.status = cb.checked ? 'done' : 'open'; it.done_by = state.me.user.email; it.done_at = new Date().toISOString();
+        if (state.month && state.month.month === mc.month) { state.month = mc; LS.set('month', mc); }
+        const y = window.scrollY; drawMonth(mc); window.scrollTo(0, y);
+      } catch (e) { cb.checked = !cb.checked; cb.disabled = false; toast(e.message); }
+    }));
+  }
+
+  // ───────── Orders ─────────
+  function orderInfo(o) {
+    const st = (W().stages && W().stages.order) || [];
+    const ev = (W().orderEvents || []).filter((e) => e.order_id === o.order_id).sort((a, b) => String(a.at).localeCompare(String(b.at)));
+    const info = {};
+    ev.forEach((e) => { if (e.stage && !info[e.stage]) info[e.stage] = dShort(e.at); });
+    if (st[1] && o.quote_amount !== '' && o.quote_amount !== undefined) info[st[1]] = (info[st[1]] ? info[st[1]] + ' · ' : '') + moneyFmt(o.quote_amount) + (o.quote_ref ? ' · ' + esc(o.quote_ref) : '');
+    if (st[3] && o.ready_date) info[st[3]] = (o.delivery_method ? esc(o.delivery_method) + ' ' : '') + 'on ' + dShort(o.ready_date) + (info[st[3]] ? ' (set ' + info[st[3]] + ')' : '');
+    return { stages: st, events: ev, info };
+  }
+  function orderCard(o) {
+    return '<a class="card" href="#/orders/' + encodeURIComponent(o.order_id) + '"><div class="card-top"><span class="ticket">' + esc(o.order_id) + '</span>' +
+      (o.supplier ? '<span class="chip">' + esc(o.supplier) + '</span>' : '') + (o.quote_amount !== '' && o.quote_amount !== undefined ? '<span class="mono">' + moneyFmt(o.quote_amount) + '</span>' : '') + '</div>' +
+      '<div class="card-title">' + esc(o.title) + '</div><div class="card-meta"><span>' + esc(o.site_name || '') + '</span>' +
+      (o.ready_date && o.stage !== 'Received' ? '<span class="chip flag">' + esc(o.delivery_method || 'Ready') + ' ' + esc(dShort(o.ready_date)) + '</span>' : '') +
+      '<span>' + esc(o.stage) + ' · ' + daysSince(o.stage_at) + 'd</span></div></a>';
+  }
+  function renderOrders() {
+    const w = W();
+    if (!w.orders) { view().innerHTML = '<div class="empty">' + (state.work ? 'Your role cannot see orders.' : 'Connect once to download orders.') + '</div>'; return; }
+    const st = w.stages.order;
+    const f = state.orderFilter || 'open';
+    const q = (state.orderQ || '').toLowerCase();
+    const list = w.orders.filter((o) => (f === 'all' || (f === 'open' ? o.stage !== st[st.length - 1] && o.stage !== 'Cancelled' : o.stage === st[st.length - 1] || o.stage === 'Cancelled')) &&
+      (!q || [o.order_id, o.title, o.supplier, o.site_name, o.notes].join(' ').toLowerCase().indexOf(q) >= 0));
+    const cols = f === 'open' ? st.slice(0, -1) : f === 'done' ? [st[st.length - 1], 'Cancelled'] : st.concat(['Cancelled']);
+    view().innerHTML = '<div class="page-head"><h1>Orders</h1>' + (can('order.edit') ? '<a class="btn primary" href="#/orders/new">New order</a>' : '') +
+      '<a class="btn ghost" href="#/prices">Part prices</a></div>' +
+      '<div class="toolbar"><input id="o-q" type="search" placeholder="Search part, supplier, address…" value="' + esc(state.orderQ || '') + '" aria-label="Search orders">' +
+      '<div class="seg" role="group" aria-label="Show">' + [['open', 'Open'], ['done', 'Received'], ['all', 'All']].map((x) => '<button type="button" data-of="' + x[0] + '" class="' + (f === x[0] ? 'on' : '') + '">' + x[1] + '</button>').join('') + '</div></div>' +
+      '<div class="board">' + cols.map((c) => { const l = list.filter((o) => o.stage === c); return '<section class="lane"><h2>' + esc(c) + ' · ' + l.length + '</h2>' +
+        (l.length ? '<div class="list">' + l.sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at))).map(orderCard).join('') + '</div>' : '<p class="muted lane-empty">—</p>') + '</section>'; }).join('') + '</div>';
+    view().querySelectorAll('[data-of]').forEach((b) => b.addEventListener('click', () => { state.orderFilter = b.dataset.of; renderOrders(); }));
+    const qi = $('#o-q'); qi.addEventListener('input', () => { state.orderQ = qi.value; const p = qi.selectionStart; renderOrders(); const n = $('#o-q'); n.focus(); n.setSelectionRange(p, p); });
+  }
+  function renderOrderNew(params) {
+    if (!can('order.edit')) { view().innerHTML = '<div class="empty">Your role cannot open orders.</div>'; return; }
+    const mail = params.get('mail') && (W().mail || []).find((m) => m.mail_id === params.get('mail'));
+    const sup = mail && mail.supplier ? mail.supplier : '';
+    const site = params.get('site') || (mail && mail.site_id) || '';
+    const proj = params.get('project') || '';
+    view().innerHTML = '<a class="back" href="#/orders">‹ Orders</a><h1>New order</h1>' +
+      (mail ? '<div class="stamp"><span>From email: <strong>' + esc(mail.subject) + '</strong></span><span class="muted">' + esc(mail.from) + '</span></div>' : '') +
+      '<form class="stack" id="of" novalidate>' +
+      '<label class="field"><span>What are we ordering?</span><input id="o-title" type="text" required placeholder="e.g. GAL door operator board MOVFR" value="' + esc(mail ? mail.subject.replace(/^(re|fwd?):\s*/i, '') : '') + '"></label>' +
+      '<label class="field"><span>Supplier</span><input id="o-sup" type="text" list="sup-list" value="' + esc(sup) + '"><datalist id="sup-list">' +
+        (W().suppliers || []).map((s) => '<option value="' + esc(s.name) + '">').join('') + '</datalist></label>' +
+      '<label class="field"><span>For which address</span><select id="o-site">' + siteOptions(site) + '</select></label>' +
+      '<label class="field" id="o-other-f" hidden><span>Address</span><input id="o-other" type="text"></label>' +
+      '<label class="field"><span>Project (optional)</span><select id="o-proj"><option value="">—</option>' +
+        (W().projects || []).filter((p) => p.status !== 'closed').map((p) => '<option value="' + esc(p.project_id) + '"' + (p.project_id === proj ? ' selected' : '') + '>' + esc(p.project_id + ' · ' + p.title) + '</option>').join('') + '</select></label>' +
+      '<label class="field"><span>First note</span><textarea id="o-note" placeholder="e.g. Asked CITI for price and lead time by email">' + esc(mail ? 'Email: ' + mail.subject : '') + '</textarea></label>' +
+      '<p class="muted" id="o-err" role="alert"></p><div class="actions"><button class="btn primary" type="submit">Open order</button></div></form>';
+    const sel = $('#o-site'); const tog = () => { $('#o-other-f').hidden = sel.value !== '__other'; }; sel.addEventListener('change', tog); tog();
+    $('#of').addEventListener('submit', async (e) => {
+      e.preventDefault(); const err = $('#o-err'); err.textContent = '';
+      const sid = sel.value === '__other' ? '' : sel.value;
+      try {
+        const r = await api('saveOrder', { title: $('#o-title').value, supplier: $('#o-sup').value, site_id: sid,
+          site_name: sel.value === '__other' ? $('#o-other').value : (siteById(sid) || {}).name, project_id: $('#o-proj').value,
+          first_note: $('#o-note').value, mail_id: mail ? mail.mail_id : '', mail_thread_id: mail ? mail.thread_id : '' });
+        await loadWork(); toast(r.order.order_id + ' opened'); location.hash = '#/orders/' + encodeURIComponent(r.order.order_id);
+      } catch (ex) { err.textContent = ex.message; }
+    });
+  }
+  function renderOrder(id) {
+    const o = (W().orders || []).find((x) => x.order_id === id);
+    if (!o) { view().innerHTML = '<div class="empty">Order not found. <a href="#/orders">Back to orders</a></div>'; return; }
+    const { stages, events, info } = orderInfo(o);
+    const prices = (W().prices || []).filter((p) => p.order_id === id);
+    const mails = (W().mail || []).filter((m) => (m.linked_type === 'order' && m.linked_id === id) || String(o.mail_thread_ids || '').split(',').indexOf(m.thread_id) >= 0);
+    const mailById = {}; (W().mail || []).forEach((m) => { mailById[m.mail_id] = m; });
+    const next = stages[Math.min(stages.indexOf(o.stage) + 1, stages.length - 1)];
+    const proj = o.project_id && (W().projects || []).find((p) => p.project_id === o.project_id);
+    view().innerHTML = '<a class="back" href="#/orders">‹ Orders</a>' +
+      '<div class="page-head"><h1>' + esc(o.title) + '</h1><span class="ticket">' + esc(o.order_id) + '</span></div>' +
+      '<dl class="kv"><dt>Supplier</dt><dd>' + esc(o.supplier || '—') + '</dd><dt>Address</dt><dd>' + siteLink(o.site_id, o.site_name) + '</dd>' +
+        (proj ? '<dt>Project</dt><dd><a href="#/projects/' + encodeURIComponent(proj.project_id) + '">' + esc(proj.project_id + ' · ' + proj.title) + '</a></dd>' : '') +
+        '<dt>Opened</dt><dd>' + esc(dShort(o.created_at)) + ' by ' + esc(who(o.created_by)) + '</dd>' + (o.notes ? '<dt>Notes</dt><dd>' + esc(o.notes) + '</dd>' : '') + '</dl>' +
+      flowHtml(stages, o.stage, info) +
+      (can('order.edit') && o.stage !== stages[stages.length - 1] && o.stage !== 'Cancelled' ? '<h2>Next step</h2><form class="stack step-form" id="os" novalidate>' +
+        '<div class="row2"><label class="field"><span>Step</span><select id="os-stage">' + stages.concat(['Cancelled']).map((s) => '<option' + (s === next ? ' selected' : '') + '>' + esc(s) + '</option>').join('') + '</select></label>' +
+        '<label class="field" data-for="quote"><span>Supplier price (total)</span><input id="os-amt" type="text" inputmode="decimal" placeholder="$"></label></div>' +
+        '<div class="row2"><label class="field" data-for="quote"><span>Quote #</span><input id="os-ref" type="text"></label>' +
+        '<label class="field" data-for="ready"><span>Pickup / delivery date</span><input id="os-date" type="date"></label>' +
+        '<label class="field" data-for="ready"><span>How</span><select id="os-how"><option>Pickup</option><option>Delivery</option></select></label></div>' +
+        '<label class="field"><span>Note</span><input id="os-note" type="text" placeholder="e.g. Chris approved; supplier says ready Thursday"></label>' +
+        '<p class="muted" id="os-err" role="alert"></p><div class="actions"><button class="btn primary" type="submit">Save step</button>' +
+        '<button class="btn ghost" type="button" id="os-noteonly">Add note only</button></div></form>' : '') +
+      '<h2>Part prices · ' + prices.length + '</h2>' +
+      (prices.length ? '<div class="tscroll"><table class="ptable"><thead><tr><th>Part</th><th>Part #</th><th>Qty</th><th>Unit price</th><th>Total</th><th>Status</th><th>Date</th></tr></thead><tbody>' +
+        prices.map((p) => '<tr><td>' + esc(p.part) + '</td><td class="mono">' + esc(p.part_no) + '</td><td>' + esc(p.qty) + ' ' + esc(p.unit) + '</td><td class="mono">' + moneyFmt(p.unit_price) +
+          '</td><td class="mono">' + moneyFmt(p.total) + '</td><td>' + esc(p.status) + '</td><td>' + esc(dShort(p.date)) + '</td></tr>').join('') + '</tbody></table></div>' : '<p class="muted">No prices recorded yet. Add what the supplier quoted, so next time we know our cost.</p>') +
+      (can('order.edit') ? '<details class="add-site"><summary class="btn">Add part prices</summary><form class="stack" id="pf" novalidate>' +
+        '<div class="row2"><label class="field"><span>Date</span><input id="pf-date" type="date" value="' + esc(new Date().toISOString().slice(0, 10)) + '"></label>' +
+        '<label class="field"><span>Status</span><select id="pf-status"><option value="quoted">Quoted</option><option value="bought">Bought</option></select></label></div>' +
+        '<div id="pf-lines"></div><div class="actions"><button class="btn ghost" type="button" id="pf-more">+ Another part</button></div>' +
+        '<p class="muted" id="pf-err" role="alert"></p><div class="actions"><button class="btn primary" type="submit">Save prices</button></div></form></details>' : '') +
+      '<h2>Timeline</h2><ol class="timeline">' + events.slice().reverse().map((e) => {
+        const m = e.mail_id && mailById[e.mail_id];
+        return '<li><span class="muted">' + esc(fmtDate(e.at)) + '</span> ' + (e.stage ? '<b>' + esc(e.stage) + '</b> ' : '') + esc(e.note || '') +
+          (e.amount !== '' && e.amount !== undefined ? ' <span class="mono">' + moneyFmt(e.amount) + '</span>' : '') + (e.date_value ? ' · ' + esc(dShort(e.date_value)) : '') +
+          ' <span class="muted">· ' + esc(who(e.by)) + '</span>' + (m ? ' · <a href="' + esc(m.link) + '" target="_blank" rel="noopener">email</a>' : '') + '</li>';
+      }).join('') + '</ol>' +
+      (mails.length ? '<h2>Emails · ' + mails.length + '</h2><div class="list">' + mails.map(mailRow).join('') + '</div>' : '');
+    bindMailCards(view());
+    const form = $('#os');
+    if (form) {
+      const sync = () => { const s = $('#os-stage').value; form.querySelectorAll('[data-for]').forEach((el) => { el.hidden = !((el.dataset.for === 'quote' && s === stages[1]) || (el.dataset.for === 'ready' && s === stages[3])); }); };
+      $('#os-stage').addEventListener('change', sync); sync();
+      const send = async (noteOnly) => {
+        const err = $('#os-err'); err.textContent = '';
+        const s = $('#os-stage').value;
+        if (!noteOnly && s === stages[3] && !$('#os-date').value) { err.textContent = 'When can we pick it up / when is it delivered?'; return; }
+        if (noteOnly && !$('#os-note').value.trim()) { err.textContent = 'Write the note first.'; return; }
+        try {
+          await api('orderStep', noteOnly ? { order_id: id, note: $('#os-note').value } : { order_id: id, stage: s, note: $('#os-note').value,
+            quote_amount: s === stages[1] ? $('#os-amt').value : '', quote_ref: s === stages[1] ? $('#os-ref').value : '',
+            ready_date: s === stages[3] ? $('#os-date').value : '', delivery_method: s === stages[3] ? $('#os-how').value : '' });
+          await loadWork(); toast('Saved'); renderOrder(id);
+        } catch (ex) { err.textContent = ex.message; }
+      };
+      form.addEventListener('submit', (e) => { e.preventDefault(); send(false); });
+      $('#os-noteonly').addEventListener('click', () => send(true));
+    }
+    const pf = $('#pf');
+    if (pf) {
+      const line = () => '<div class="pline"><input type="text" class="pl-part" placeholder="Part" aria-label="Part"><input type="text" class="pl-no" placeholder="Part #" aria-label="Part number">' +
+        '<input type="text" class="pl-qty" inputmode="decimal" value="1" aria-label="Quantity"><input type="text" class="pl-price" inputmode="decimal" placeholder="Unit $" aria-label="Unit price"></div>';
+      $('#pf-lines').innerHTML = line();
+      $('#pf-more').addEventListener('click', () => $('#pf-lines').insertAdjacentHTML('beforeend', line()));
+      pf.addEventListener('submit', async (e) => {
+        e.preventDefault(); const err = $('#pf-err'); err.textContent = '';
+        const lines = Array.from(pf.querySelectorAll('.pline')).map((l) => ({ part: l.querySelector('.pl-part').value, part_no: l.querySelector('.pl-no').value,
+          qty: l.querySelector('.pl-qty').value, unit_price: l.querySelector('.pl-price').value })).filter((l) => l.part.trim());
+        try { await api('savePrices', { order_id: id, supplier: o.supplier, site_name: o.site_name, date: $('#pf-date').value, status: $('#pf-status').value, lines });
+              await loadWork(); toast('Prices saved'); renderOrder(id); }
+        catch (ex) { err.textContent = ex.message; }
+      });
+    }
+  }
+
+  // ───────── Part prices (what we paid / were quoted, so we know our cost) ─────────
+  function renderPrices() {
+    const w = W();
+    if (!w.prices) { view().innerHTML = '<div class="empty">' + (state.work ? 'Your role cannot see prices.' : 'Connect once to download prices.') + '</div>'; return; }
+    const q = (state.priceQ || '').toLowerCase();
+    const groups = {};
+    w.prices.forEach((p) => { const k = String(p.part_no || p.part).trim().toLowerCase(); (groups[k] = groups[k] || []).push(p); });
+    const rows = Object.keys(groups).map((k) => { const l = groups[k].sort((a, b) => String(b.date).localeCompare(String(a.date))); return { k, l, last: l[0] }; })
+      .filter((g) => !q || g.l.some((p) => [p.part, p.part_no, p.supplier, p.site_name, p.order_id].join(' ').toLowerCase().indexOf(q) >= 0))
+      .sort((a, b) => String(a.last.part).localeCompare(String(b.last.part)));
+    view().innerHTML = '<div class="page-head"><h1>Part prices</h1><span class="muted">' + w.prices.length + ' prices · ' + Object.keys(groups).length + ' parts</span></div>' +
+      '<p class="muted">Every price a supplier quoted us or we paid, newest first. Add prices from an order.</p>' +
+      '<div class="search-box"><input id="p-q" type="search" placeholder="Part, part #, supplier…" value="' + esc(state.priceQ || '') + '" aria-label="Search prices"></div>' +
+      (rows.length ? '<div class="tscroll"><table class="ptable"><thead><tr><th>Part</th><th>Last price</th><th>Supplier</th><th>Date</th><th>Range</th><th></th></tr></thead><tbody>' +
+        rows.map((g) => { const u = g.l.map((p) => Number(p.unit_price)); const lo = Math.min.apply(null, u), hi = Math.max.apply(null, u);
+          return '<tr class="prow" data-k="' + esc(g.k) + '"><td><b>' + esc(g.last.part) + '</b>' + (g.last.part_no ? '<br><span class="mono muted">' + esc(g.last.part_no) + '</span>' : '') + '</td>' +
+            '<td class="mono">' + moneyFmt(g.last.unit_price) + ' / ' + esc(g.last.unit || 'ea') + '<br><span class="muted">' + esc(g.last.status) + '</span></td><td>' + esc(g.last.supplier) + '</td><td>' + esc(dShort(g.last.date)) + '</td>' +
+            '<td class="mono">' + (g.l.length > 1 ? moneyFmt(lo) + ' – ' + moneyFmt(hi) : '') + '</td><td>' + (g.l.length > 1 ? g.l.length + ' prices' : '') + '</td></tr>' +
+            '<tr class="phist" data-for="' + esc(g.k) + '" hidden><td colspan="6"><ul>' + g.l.map((p) => '<li>' + esc(dShort(p.date)) + ' · ' + esc(p.supplier) + ' · <span class="mono">' + moneyFmt(p.unit_price) + '</span> × ' + esc(p.qty) +
+              ' · ' + esc(p.status) + (p.order_id ? ' · <a href="#/orders/' + encodeURIComponent(p.order_id) + '">' + esc(p.order_id) + '</a>' : '') + (p.site_name ? ' · ' + esc(p.site_name) : '') + '</li>').join('') + '</ul></td></tr>';
+        }).join('') + '</tbody></table></div>' : '<div class="empty">' + (q ? 'No part matches.' : 'No prices yet. Open an order and use "Add part prices".') + '</div>');
+    const qi = $('#p-q'); qi.addEventListener('input', () => { state.priceQ = qi.value; const p = qi.selectionStart; renderPrices(); const n = $('#p-q'); n.focus(); n.setSelectionRange(p, p); });
+    view().querySelectorAll('.prow').forEach((r) => r.addEventListener('click', () => { const h = view().querySelector('.phist[data-for="' + CSS.escape(r.dataset.k) + '"]'); if (h) h.hidden = !h.hidden; }));
+  }
+
+  // ───────── Projects (installation / repair flow) ─────────
+  const typeName = (t) => ((state.data && state.data.projectTypes) || []).find((x) => x.type_id === t) || { name: t };
+  function projectSteps(p) {
+    return (W().projectStages || []).filter((s) => s.type_id === p.type_id && (String(s.segments || 'ALL').toUpperCase() === 'ALL' || String(s.segments).toUpperCase() === String(p.segment_id).toUpperCase()))
+      .sort((a, b) => Number(a.order) - Number(b.order));
+  }
+  function renderProjects() {
+    const w = W();
+    if (!w.projects) { view().innerHTML = '<div class="empty">' + (state.work ? 'Your role cannot see projects.' : 'Connect once to download projects.') + '</div>'; return; }
+    const showClosed = !!state.projClosed;
+    const list = w.projects.filter((p) => showClosed || p.status !== 'closed').sort((a, b) => String(b.updated_at || b.created_at).localeCompare(String(a.updated_at || a.created_at)));
+    const byType = {}; list.forEach((p) => { (byType[p.type_id] = byType[p.type_id] || []).push(p); });
+    view().innerHTML = '<div class="page-head"><h1>Projects</h1>' + (can('project.create') ? '<a class="btn primary" href="#/projects/new">New project</a>' : '') +
+      '<label class="check-row"><input type="checkbox" id="pj-closed"' + (showClosed ? ' checked' : '') + '>Show closed</label></div>' +
+      (list.length ? '' : '<div class="empty">No open projects.</div>') +
+      Object.keys(byType).map((t) => '<h2>' + esc(typeName(t).name) + ' · ' + byType[t].length + '</h2><div class="list">' + byType[t].map((p) => {
+        const steps = projectSteps(p); const i = steps.findIndex((s) => s.stage === p.stage);
+        return '<a class="card" href="#/projects/' + encodeURIComponent(p.project_id) + '"><div class="card-top"><span class="ticket">' + esc(p.project_id) + '</span><span class="chip">' + esc(p.segment_id) + '</span>' +
+          '<span class="chip' + (p.status === 'closed' ? ' t-ok' : '') + '">' + esc(p.stage || p.status) + '</span>' + (steps.length ? '<span class="muted">step ' + (i + 1) + ' of ' + steps.length + ' · ' + daysSince(p.stage_at || p.created_at) + 'd</span>' : '') + '</div>' +
+          '<div class="card-title">' + esc(p.title) + '</div><div class="card-meta"><span>' + esc(p.site_name || '') + '</span>' + (p.customer ? '<span>' + esc(p.customer) + '</span>' : '') + (p.value ? '<span class="mono">' + moneyFmt(p.value) + '</span>' : '') + '</div></a>';
+      }).join('') + '</div>').join('');
+    $('#pj-closed').addEventListener('change', (e) => { state.projClosed = e.target.checked; renderProjects(); });
+  }
+  function renderProjectNew(params) {
+    if (!can('project.create')) { view().innerHTML = '<div class="empty">Your role cannot open projects.</div>'; return; }
+    const mail = params.get('mail') && (W().mail || []).find((m) => m.mail_id === params.get('mail'));
+    const types = (state.data && state.data.projectTypes) || [];
+    view().innerHTML = '<a class="back" href="#/projects">‹ Projects</a><h1>New project</h1>' +
+      (mail ? '<div class="stamp"><span>From email: <strong>' + esc(mail.subject) + '</strong></span><span class="muted">' + esc(mail.from) + '</span></div>' : '') +
+      '<form class="stack" id="pjf" novalidate><div class="row2"><label class="field"><span>Type</span><select id="pj-type">' +
+        types.map((t) => '<option value="' + esc(t.type_id) + '"' + (t.type_id === (mail && /repair|replace/i.test(mail.subject) ? 'REP' : 'INS') ? ' selected' : '') + '>' + esc(t.name) + '</option>').join('') + '</select></label>' +
+      '<label class="field"><span>Commercial / residential</span><select id="pj-seg">' + state.data.segments.map((s) => '<option value="' + esc(s.segment_id) + '">' + esc(s.name) + '</option>').join('') + '</select></label></div>' +
+      '<label class="field"><span>Title</span><input id="pj-title" type="text" required placeholder="e.g. Savaria V1504 home lift – 27 Pomander Rd" value="' + esc(mail ? mail.subject.replace(/^(re|fwd?):\s*/i, '') : '') + '"></label>' +
+      '<label class="field"><span>Address</span><select id="pj-site">' + siteOptions(mail && mail.site_id ? mail.site_id : '__other') + '</select></label>' +
+      '<label class="field" id="pj-other-f"><span>Address (not in Sites yet)</span><input id="pj-other" type="text"></label>' +
+      '<div class="row2"><label class="field"><span>Customer</span><input id="pj-cust" type="text"></label><label class="field"><span>Contact (phone / email)</span><input id="pj-contact" type="text" value="' + esc(mail ? mail.from : '') + '"></label></div>' +
+      '<label class="field"><span>Value (optional)</span><input id="pj-value" type="text" inputmode="decimal" placeholder="$"></label>' +
+      '<label class="field"><span>First note</span><textarea id="pj-note"></textarea></label>' +
+      '<p class="muted">Opening a project also makes its Drive folder with the usual subfolders.</p>' +
+      '<p class="muted" id="pj-err" role="alert"></p><div class="actions"><button class="btn primary" type="submit">Open project</button></div></form>';
+    const sel = $('#pj-site'); const tog = () => { $('#pj-other-f').hidden = sel.value !== '__other'; if (sel.value && sel.value !== '__other') { const s = siteById(sel.value); if (s) $('#pj-seg').value = s.segment_id; } };
+    sel.addEventListener('change', tog); tog();
+    $('#pjf').addEventListener('submit', async (e) => {
+      e.preventDefault(); const err = $('#pj-err'); err.textContent = '';
+      const sid = sel.value === '__other' ? '' : sel.value;
+      try {
+        const r = await api('saveProject', { type_id: $('#pj-type').value, segment_id: $('#pj-seg').value, title: $('#pj-title').value, site_id: sid,
+          site_name: sid ? siteById(sid).name : $('#pj-other').value, customer: $('#pj-cust').value, contact: $('#pj-contact').value, value: $('#pj-value').value,
+          first_note: $('#pj-note').value, mail_id: mail ? mail.mail_id : '' });
+        await loadWork(); toast(r.project.project_id + ' opened'); location.hash = '#/projects/' + encodeURIComponent(r.project.project_id);
+      } catch (ex) { err.textContent = ex.message; }
+    });
+  }
+  function renderProject(id) {
+    const p = (W().projects || []).find((x) => x.project_id === id);
+    if (!p) { view().innerHTML = '<div class="empty">Project not found. <a href="#/projects">Back to projects</a></div>'; return; }
+    const steps = projectSteps(p);
+    const names = steps.map((s) => s.stage);
+    const ev = (W().projectEvents || []).filter((e) => e.project_id === id).sort((a, b) => String(a.at).localeCompare(String(b.at)));
+    const info = {}; ev.forEach((e) => { if (e.stage && !info[e.stage]) info[e.stage] = dShort(e.at); });
+    const orders = (W().orders || []).filter((o) => o.project_id === id);
+    const mailById = {}; (W().mail || []).forEach((m) => { mailById[m.mail_id] = m; });
+    const mails = (W().mail || []).filter((m) => m.linked_type === 'project' && m.linked_id === id);
+    const at = names.indexOf(p.stage);
+    const cur = steps[at];
+    view().innerHTML = '<a class="back" href="#/projects">‹ Projects</a>' +
+      '<div class="page-head"><h1>' + esc(p.title) + '</h1><span class="ticket">' + esc(p.project_id) + '</span></div>' +
+      '<dl class="kv"><dt>Type</dt><dd>' + esc(typeName(p.type_id).name) + ' · ' + esc(p.segment_id) + '</dd><dt>Address</dt><dd>' + siteLink(p.site_id, p.site_name) + '</dd>' +
+        (p.customer ? '<dt>Customer</dt><dd>' + esc(p.customer) + '</dd>' : '') + (p.contact ? '<dt>Contact</dt><dd>' + esc(p.contact) + '</dd>' : '') +
+        (p.value ? '<dt>Value</dt><dd class="mono">' + moneyFmt(p.value) + '</dd>' : '') +
+        (p.folder_url ? '<dt>Files</dt><dd><a href="' + esc(p.folder_url) + '" target="_blank" rel="noopener">Drive folder</a></dd>' : '') + '</dl>' +
+      flowHtml(names, p.stage, info) +
+      (cur && cur.notes ? '<p class="muted">Now: ' + esc(cur.notes) + '</p>' : '') +
+      (can('project.edit') && p.status !== 'closed' ? '<h2>Next step</h2><form class="stack step-form" id="ps" novalidate><div class="row2">' +
+        '<label class="field"><span>Step</span><select id="ps-stage">' + names.concat(['Lost / cancelled']).map((s, i) => '<option' + (i === Math.min(at + 1, names.length - 1) ? ' selected' : '') + '>' + esc(s) + '</option>').join('') + '</select></label>' +
+        '<label class="field"><span>Note</span><input id="ps-note" type="text" placeholder="e.g. quote $38,500 sent, Chris approved"></label></div>' +
+        '<p class="muted" id="ps-err" role="alert"></p><div class="actions"><button class="btn primary" type="submit">Save step</button><button class="btn ghost" type="button" id="ps-noteonly">Add note only</button>' +
+        (can('order.edit') ? '<a class="btn ghost" href="#/orders/new?project=' + encodeURIComponent(id) + (p.site_id ? '&site=' + encodeURIComponent(p.site_id) : '') + '">Order materials</a>' : '') + '</div></form>' : '') +
+      (orders.length ? '<h2>Orders · ' + orders.length + '</h2><div class="list">' + orders.map(orderCard).join('') + '</div>' : '') +
+      '<h2>Timeline</h2><ol class="timeline">' + ev.slice().reverse().map((e) => { const m = e.mail_id && mailById[e.mail_id];
+        return '<li><span class="muted">' + esc(fmtDate(e.at)) + '</span> ' + (e.stage ? '<b>' + esc(e.stage) + '</b> ' : '') + esc(e.note || '') + ' <span class="muted">· ' + esc(who(e.by)) + '</span>' +
+          (m ? ' · <a href="' + esc(m.link) + '" target="_blank" rel="noopener">email</a>' : '') + '</li>'; }).join('') + '</ol>' +
+      (mails.length ? '<h2>Emails · ' + mails.length + '</h2><div class="list">' + mails.map(mailRow).join('') + '</div>' : '');
+    bindMailCards(view());
+    const f = $('#ps');
+    if (f) {
+      const send = async (noteOnly) => {
+        const err = $('#ps-err'); err.textContent = '';
+        if (noteOnly && !$('#ps-note').value.trim()) { err.textContent = 'Write the note first.'; return; }
+        try { await api('projectStep', noteOnly ? { project_id: id, note: $('#ps-note').value } : { project_id: id, stage: $('#ps-stage').value, note: $('#ps-note').value });
+              await loadWork(); toast('Saved'); renderProject(id); }
+        catch (ex) { err.textContent = ex.message; }
+      };
+      f.addEventListener('submit', (e) => { e.preventDefault(); send(false); });
+      $('#ps-noteonly').addEventListener('click', () => send(true));
+    }
+  }
+
+  // ───────── Mail (records from Kyle's mailbox) ─────────
+  const MAIL_CATS = ['Quote', 'Order', 'Installation', 'Maintenance', 'Inspection', 'Invoice', 'Task'];
+  function renderMail() {
+    const w = W();
+    if (!w.mail) { view().innerHTML = '<div class="empty">' + (state.work ? 'Your role cannot see mail records.' : 'Connect once to download mail records.') + '</div>'; return; }
+    const cat = state.mailCat || '', q = (state.mailQ || '').toLowerCase(), st = state.mailSt || 'open';
+    const list = w.mail.filter((m) => (!cat || String(m.categories).split(',').indexOf(cat) >= 0) &&
+      (st === 'all' || (st === 'open' ? m.status !== 'ignored' : m.status === st)) &&
+      (!q || [m.subject, m.from, m.to, m.excerpt, m.site_name, m.supplier].join(' ').toLowerCase().indexOf(q) >= 0));
+    const boxes = (w.mailboxes || []).map((b) => esc(b.owner || b.mailbox) + ': ' + (b.active ? (b.last_ingest ? 'checked ' + esc(ago(b.last_ingest)) : 'waiting for the first run') : 'not connected yet')).join(' · ');
+    view().innerHTML = '<div class="page-head"><h1>Mail</h1><span class="muted">' + boxes + '</span></div>' +
+      '<p class="muted">Emails about quotes, orders, installs, maintenance and tasks, collected read-only from the mailbox. Open one to file it under an order or project.</p>' +
+      '<div class="search-box"><input id="ml-q" type="search" placeholder="Subject, sender, address…" value="' + esc(state.mailQ || '') + '" aria-label="Search mail"></div>' +
+      '<div class="chips-row">' + [''].concat(MAIL_CATS).map((c) => { const n = w.mail.filter((m) => m.status !== 'ignored' && (!c || String(m.categories).split(',').indexOf(c) >= 0)).length;
+        return '<button type="button" class="fchip' + (c === cat ? ' on' : '') + '" data-cat="' + esc(c) + '">' + esc(c || 'All') + ' <small>' + n + '</small></button>'; }).join('') +
+        '<select id="ml-st" aria-label="Status"><option value="open"' + (st === 'open' ? ' selected' : '') + '>Not ignored</option><option value="new"' + (st === 'new' ? ' selected' : '') + '>Not filed yet</option>' +
+        '<option value="linked"' + (st === 'linked' ? ' selected' : '') + '>Filed</option><option value="ignored"' + (st === 'ignored' ? ' selected' : '') + '>Ignored</option><option value="all"' + (st === 'all' ? ' selected' : '') + '>All</option></select></div>' +
+      (list.length ? '<div class="list">' + list.slice(0, 200).map(mailRow).join('') + '</div>' : '<div class="empty">' + (w.mail.length ? 'Nothing matches.' : 'No emails yet. They appear here once the collector runs in Kyle\'s account.') + '</div>');
+    bindMailCards(view());
+    view().querySelectorAll('[data-cat]').forEach((b) => b.addEventListener('click', () => { state.mailCat = b.dataset.cat; renderMail(); }));
+    $('#ml-st').addEventListener('change', (e) => { state.mailSt = e.target.value; renderMail(); });
+    const qi = $('#ml-q'); qi.addEventListener('input', () => { state.mailQ = qi.value; const p = qi.selectionStart; renderMail(); const n = $('#ml-q'); n.focus(); n.setSelectionRange(p, p); });
+  }
+
+  /** Orders, projects and emails at one address, for the site page. */
+  function siteWorkHtml(s) {
+    const k = siteKey(s);
+    const at = (x) => (x.site_id && x.site_id === s.site_id) || (k && x.addr_key === k);
+    const orders = (W().orders || []).filter(at), projects = (W().projects || []).filter(at), mails = (W().mail || []).filter((m) => at(m) && m.status !== 'ignored');
+    return (projects.length ? '<h2>Projects · ' + projects.length + '</h2><div class="list">' + projects.map((p) => '<a class="card" href="#/projects/' + encodeURIComponent(p.project_id) + '"><div class="card-top"><span class="ticket">' +
+        esc(p.project_id) + '</span><span class="chip">' + esc(p.stage) + '</span></div><div class="card-title">' + esc(p.title) + '</div></a>').join('') + '</div>' : '') +
+      (orders.length ? '<h2>Orders · ' + orders.length + '</h2><div class="list">' + orders.map(orderCard).join('') + '</div>' : '') +
+      (mails.length ? '<h2>Emails · ' + mails.length + '</h2><div class="list">' + mails.slice(0, 30).map(mailRow).join('') + '</div>' : '') +
+      (can('order.edit') ? '<div class="actions" style="margin-top:12px"><a class="btn ghost" href="#/orders/new?site=' + encodeURIComponent(s.site_id) + '">New order for this address</a></div>' : '');
+  }
+
   // ───────── router ─────────
   function route() {
     state.touched = false;
+    const dr = $('#drawer'); if (!dr.hidden) { dr.hidden = true; dr.innerHTML = ''; }
     if (!state.me) { renderSignIn(); return; }
     const hash = location.hash || '#/search';
     const [path, query] = hash.slice(1).split('?');
     const parts = path.split('/').filter(Boolean);
     const tab = parts[0] || 'reports';
     document.querySelectorAll('.tabs a').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
-    view().classList.toggle('wide', tab === 'tables' || tab === 'schedule');
+    view().classList.toggle('wide', tab === 'tables' || tab === 'schedule' || (tab === 'orders' && !parts[1]));
     if (tab === 'search') renderSearch();
     else if (tab === 'schedule') renderSchedule();
     else if (tab === 'tables') renderTables();
     else if (tab === 'reports' && parts[1]) renderDetail(decodeURIComponent(parts[1]));
     else if (tab === 'new') renderNew(new URLSearchParams(query || ''));
     else if (tab === 'outbox') renderOutbox();
+    else if (tab === 'month') renderMonth(new URLSearchParams(query || ''));
+    else if (tab === 'orders' && parts[1] === 'new') renderOrderNew(new URLSearchParams(query || ''));
+    else if (tab === 'orders' && parts[1]) renderOrder(decodeURIComponent(parts[1]));
+    else if (tab === 'orders') renderOrders();
+    else if (tab === 'prices') renderPrices();
+    else if (tab === 'projects' && parts[1] === 'new') renderProjectNew(new URLSearchParams(query || ''));
+    else if (tab === 'projects' && parts[1]) renderProject(decodeURIComponent(parts[1]));
+    else if (tab === 'projects') renderProjects();
+    else if (tab === 'mail') renderMail();
     else if (tab === 'sites' && parts[1]) renderSiteDetail(decodeURIComponent(parts[1]));
     else if (tab === 'sites') renderSites();
     else renderReports();
@@ -1051,6 +1513,7 @@
   (async function start() {
     await loadOutbox();
     await loadIndexFromDevice();
+    await loadWorkFromDevice();
     renderChrome(); route();
     if (state.me && online()) {
       if (tokenValid()) {
