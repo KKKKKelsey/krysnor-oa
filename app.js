@@ -873,6 +873,8 @@
     const hidden = new Set(LS.get('calHidden', []));
     const canon = (n) => String(n || '').trim().toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase());
     entries.forEach((e) => { e.person = canon(e.person); });
+    const offCal = new Set(((state.data && state.data.users) || []).filter((u) => u.on_calendar === false).map((u) => canon(u.name)));
+    if (offCal.size) { for (let i = entries.length - 1; i >= 0; i--) if (offCal.has(entries[i].person)) entries.splice(i, 1); }
     const people = Array.from(new Set(entries.map((e) => e.person))).sort();
     const visible = entries.filter((e) => !hidden.has(e.person));
     const byDay = {}; visible.forEach((e) => { (byDay[e.date] = byDay[e.date] || []).push(e); });
@@ -1125,7 +1127,25 @@
   }
   function drawMonth(mc) {
     const label = (ym) => new Date(ym + '-15T12:00:00').toLocaleDateString('en-CA', { month: 'long', year: 'numeric' });
-    const maint = mc.items.filter((i) => i.type === 'Maintenance').sort((a, b) => a.address.localeCompare(b.address));
+    const maintAll = mc.items.filter((i) => i.type === 'Maintenance').sort((a, b) => a.address.localeCompare(b.address));
+    const maint = maintAll.filter((i) => i.segment !== 'RES'), resMaint = maintAll.filter((i) => i.segment === 'RES');
+    const resMail = mc.items.filter((i) => i.type === 'Residential email').sort((a, b) => a.address.localeCompare(b.address));
+    const draft = (i) => {
+      const t = mc.template || {}; const first = String(i.contact_name || '').split(/[\s,/&]+/)[0] || 'there';
+      const vars = { first_name: first, customer: i.contact_name || '', address: i.address, month: label(mc.month).split(' ')[0], package: i.package || '', frequency: String(i.frequency || '').toLowerCase() };
+      const fill = (x) => String(x || '').replace(/\{(\w+)\}/g, (m, k) => vars[k] !== undefined ? vars[k] : m);
+      return { subject: fill(t.subject), body: fill(t.body) };
+    };
+    const resRow = (i) => {
+      const d = draft(i);
+      const url = 'https://mail.google.com/mail/?authuser=' + encodeURIComponent(mc.sendFrom || '') + '&view=cm&fs=1&to=' + encodeURIComponent(i.contact_email || '') +
+        '&su=' + encodeURIComponent(d.subject) + '&body=' + encodeURIComponent(d.body);
+      return '<li class="check' + (i.status === 'done' ? ' is-done' : '') + '"><label><input type="checkbox" data-task="' + esc(i.task_id) + '"' + (i.status === 'done' ? ' checked' : '') + '>' +
+        '<span><b>' + esc(i.contact_name || 'Customer') + ' · ' + esc(i.address) + '</b><small>' + esc(i.frequency) + (i.package ? ' · ' + esc(i.package) : '') + ' · ' + esc(i.contact_email || 'no email on file') +
+        (i.status === 'done' ? '<br>✓ sent · ' + esc(who(i.done_by)) + ' ' + esc(dShort(i.done_at)) + te('Tasks', i.task_id, 'done_at', i.done_at) : '') + '</small></span></label>' +
+        '<span class="check-links">' + (i.contact_email ? '<a href="' + esc(url) + '" target="_blank" rel="noopener">Open draft in Gmail</a>' : '') +
+        '<a href="#" data-copy="' + esc(i.task_id) + '">Copy text</a></span></li>';
+    };
     const inv = mc.items.filter((i) => i.type === 'Maintenance invoice').sort((a, b) => a.address.localeCompare(b.address));
     const doneN = (l) => l.filter((i) => i.status === 'done').length;
     const bar = (l) => '<span class="meter" role="img" aria-label="' + doneN(l) + ' of ' + l.length + '"><i style="width:' + (l.length ? Math.round(doneN(l) / l.length * 100) : 0) + '%"></i></span>';
@@ -1143,14 +1163,24 @@
     };
     view().innerHTML = '<div class="page-head"><h1>' + esc(label(mc.month)) + '</h1>' +
       (mc.months.length > 1 ? '<select id="m-pick" aria-label="Month">' + mc.months.map((m) => '<option value="' + m + '"' + (m === mc.month ? ' selected' : '') + '>' + esc(label(m)) + '</option>').join('') + '</select>' : '') + '</div>' +
-      '<p class="muted">From the company Maintenance Record: every monthly site, and the quarterly / semi-annual sites due this month. A visit written in the record ticks the first list by itself.</p>' +
+      '<p class="muted">From the company Maintenance Record: commercial sites due this month (monthly, quarterly, semi-annual) and residential customers due this month. A visit written in the record ticks the visit lists by itself.</p>' +
       (mc.items.length ? '' : '<div class="empty">No maintenance list for your role this month.</div>') +
       (inv.length ? '<h2>Invoices to send · ' + doneN(inv) + ' of ' + inv.length + ' ' + bar(inv) + '</h2>' +
         '<p class="muted mono">Total ' + moneyFmt(total) + ' + HST ' + hst + '% = ' + moneyFmt(total * (1 + hst / 100)) + '</p>' +
         '<ul class="checklist">' + inv.map((i) => row(i, true)).join('') + '</ul>' : '') +
-      (maint.length ? '<h2>Maintenance visits · ' + doneN(maint) + ' of ' + maint.length + ' done ' + bar(maint) + '</h2>' +
-        '<ul class="checklist">' + maint.map((i) => row(i, false)).join('') + '</ul>' : '');
+      (maint.length ? '<h2>' + (resMaint.length ? 'Commercial maintenance' : 'Maintenance visits') + ' · ' + doneN(maint) + ' of ' + maint.length + ' done ' + bar(maint) + '</h2>' +
+        '<ul class="checklist">' + maint.map((i) => row(i, false)).join('') + '</ul>' : '') +
+      (resMail.length ? '<h2>Residential: booking emails · ' + doneN(resMail) + ' of ' + resMail.length + ' sent ' + bar(resMail) + '</h2>' +
+        '<p class="muted">A draft is ready for each customer due this month. Open it in Gmail (' + esc(mc.sendFrom || '') + '), check it, send it, then tick it here.</p>' +
+        '<ul class="checklist">' + resMail.map(resRow).join('') + '</ul>' : '') +
+      (resMaint.length ? '<h2>Residential maintenance · ' + doneN(resMaint) + ' of ' + resMaint.length + ' done ' + bar(resMaint) + '</h2>' +
+        '<ul class="checklist">' + resMaint.map((i) => row(i, false)).join('') + '</ul>' : '');
     const pick = $('#m-pick'); if (pick) pick.addEventListener('change', () => { location.hash = '#/month?m=' + pick.value; });
+    view().querySelectorAll('[data-copy]').forEach((a) => a.addEventListener('click', (e) => {
+      e.preventDefault(); const it = mc.items.find((x) => x.task_id === a.dataset.copy); const d = draft(it);
+      const text = 'To: ' + (it.contact_email || '') + '\nSubject: ' + d.subject + '\n\n' + d.body;
+      (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(() => toast('Copied'), () => openDrawer('Draft', '<textarea style="width:100%;min-height:300px">' + esc(text) + '</textarea>'));
+    }));
     view().querySelectorAll('[data-task]').forEach((cb) => cb.addEventListener('change', async () => {
       const it = mc.items.find((x) => x.task_id === cb.dataset.task);
       cb.disabled = true;
@@ -1404,6 +1434,9 @@
         (p.folder_url ? '<dt>Files</dt><dd><a href="' + esc(p.folder_url) + '" target="_blank" rel="noopener">Drive folder</a></dd>' : '') + '</dl>' +
       flowHtml(names, p.stage, info) +
       (cur && cur.notes ? '<p class="muted">Now: ' + esc(cur.notes) + '</p>' : '') +
+      stepBoxHtml(p, cur) +
+      (p.scope ? '<div class="scope-box"><h2>Work to do <small>confirmed by ' + esc(who(p.scope_by)) + ' ' + esc(dShort(p.scope_at)) + '</small></h2>' +
+        '<p>' + esc(p.scope) + '</p>' + (p.materials ? '<h2>Materials</h2><p>' + esc(p.materials) + '</p>' : '') + '</div>' : '') +
       (can('project.edit') && p.status !== 'closed' ? '<h2>Next step</h2><form class="stack step-form" id="ps" novalidate><div class="row2">' +
         '<label class="field"><span>Step</span><select id="ps-stage">' + names.concat(['Lost / cancelled']).map((s, i) => '<option' + (i === Math.min(at + 1, names.length - 1) ? ' selected' : '') + '>' + esc(s) + '</option>').join('') + '</select></label>' +
         '<label class="field"><span>Note</span><input id="ps-note" type="text" placeholder="e.g. quote $38,500 sent, Chris approved"></label></div>' +
@@ -1417,6 +1450,7 @@
       (mails.length ? '<h2>Emails · ' + mails.length + '</h2><div class="list">' + mails.map(mailRow).join('') + '</div>' : '');
     bindMailCards(view());
     bindPlan(p);
+    bindStepBox(p, cur);
     const f = $('#ps');
     if (f) {
       const send = async (noteOnly) => {
@@ -1586,10 +1620,49 @@
         '<div id="pl-parts"></div><div class="actions"><button class="btn ghost" type="button" id="pl-more">+ Part</button></div>' +
         '<p class="muted" id="pl-err" role="alert"></p><div class="actions"><button class="btn primary" type="submit">Save split</button></div></form></details>' : '');
   }
+  /** The current step's checkbox (or Chris's scope form) on the project page. */
+  const hasRole = (roles) => isAdmin() || String(roles || '').split(',').some((r) => ((state.me && state.me.user.roles) || []).indexOf(r.trim()) >= 0);
+  function stepBoxHtml(p, cur) {
+    if (!cur || p.status === 'closed' || !String(cur.assign_roles || '').trim()) return '';
+    const mine = hasRole(cur.assign_roles);
+    const whoFor = String(cur.assign_roles).split(',').map((r) => ({ manager: 'Chris', office: 'Kyle', technician: 'the technician', admin: 'Kaixin' })[r.trim()] || r).join(' / ');
+    if (String(cur.form) === 'scope') {
+      if (!mine) return '<div class="step-box waiting">Waiting for ' + esc(whoFor) + ' to confirm the work and materials before the quote is prepared.</div>';
+      return '<form class="stack step-box" id="scf" novalidate><h2>' + esc(cur.reminder || cur.stage) + '</h2>' +
+        '<label class="field"><span>What needs to be done</span><textarea id="sc-scope" required placeholder="e.g. Replace door operator board, adjust doors, test">' + esc(p.scope || '') + '</textarea></label>' +
+        '<label class="field"><span>Materials needed</span><textarea id="sc-mat" placeholder="e.g. GAL MOVFR board x1, door gibs x8">' + esc(p.materials || '') + '</textarea></label>' +
+        '<p class="muted" id="sc-err" role="alert"></p><div class="actions"><button class="btn primary" type="submit">Confirm and send to Kyle</button></div></form>';
+    }
+    if (!mine) return '<div class="step-box waiting">Now with ' + esc(whoFor) + ': ' + esc(cur.reminder || cur.stage) + '</div>';
+    return '<div class="step-box"><label class="bigcheck"><input type="checkbox" id="step-done"><span><b>' + esc(cur.reminder || cur.stage) + '</b>' +
+      '<small>Tick when done. The project moves to the next step.</small></span></label>' +
+      '<input type="text" id="step-note" placeholder="Note (optional), e.g. quote # or what was done"></div>';
+  }
+  function bindStepBox(p, cur) {
+    const sc = $('#scf');
+    if (sc) sc.addEventListener('submit', async (e) => {
+      e.preventDefault(); const err = $('#sc-err'); err.textContent = '';
+      try { await api('confirmScope', { project_id: p.project_id, scope: $('#sc-scope').value, materials: $('#sc-mat').value });
+            await loadWork(); loadNotes(); toast('Sent to Kyle'); renderProject(p.project_id); }
+      catch (ex) { err.textContent = ex.message; }
+    });
+    const cb = $('#step-done');
+    if (cb) cb.addEventListener('change', async () => {
+      if (!cb.checked) return;
+      cb.disabled = true;
+      const names = projectSteps(p).map((s) => s.stage);
+      const next = names[names.indexOf(p.stage) + 1];
+      try { await api('projectStep', { project_id: p.project_id, stage: next, note: '✓ ' + p.stage + ($('#step-note').value ? ' · ' + $('#step-note').value : '') });
+            await loadWork(); loadNotes(); toast('Done · now: ' + next); renderProject(p.project_id); }
+      catch (ex) { cb.checked = false; cb.disabled = false; toast(ex.message); }
+    });
+  }
   function bindPlan(p) {
     const f = $('#plf'); if (!f) return;
     const steps = projectSteps(p).map((s) => s.stage);
-    const defaults = (n) => n === 2 ? [steps[3], steps[6]] : [steps[3], steps[6], steps[steps.length - 1]];
+    const pick = (re, fb) => steps.find((s) => re.test(s)) || fb;
+    const won = pick(/accepted|approved by customer/i, steps[1]), built = pick(/^installed$|repair done/i, steps[steps.length - 2]);
+    const defaults = (n) => n === 2 ? [won, built] : [won, built, steps[steps.length - 1]];
     const partRow = (pct, stage) => '<div class="pline plan-line"><input type="text" class="pp-pct" inputmode="decimal" value="' + esc(pct) + '" aria-label="Percent"><span>% when</span>' +
       '<select class="pp-stage" aria-label="Step">' + steps.map((s) => '<option' + (s === stage ? ' selected' : '') + '>' + esc(s) + '</option>').join('') + '</select></div>';
     const fill = (pcts) => { const st = defaults(pcts.length); $('#pl-parts').innerHTML = pcts.map((x, i) => partRow(x, st[i] || steps[steps.length - 1])).join(''); };

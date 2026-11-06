@@ -46,6 +46,7 @@ const SEED = {
       ['SITES_IMPORT_TAB', '{YEAR} Maintenance-Commercial', 'Tab name to import ({YEAR} = this year). Add |{YEAR} Maintenance-Residential to include residential'],
       ['PAYMENT_PLANS', '50/50=50,50|45/45/10=45,45,10', 'Invoice splits offered on a project (name=percentages). Each part is billed at a step you pick'],
       ['HST_RATE', '13', 'Sales tax % added to maintenance invoice amounts on the This month checklist'],
+      ['RES_MAINT_ROLES', 'office', 'Who gets residential maintenance reminders and email drafts'],
       ['MAINT_REMINDER_ROLES', 'office', 'Who gets the monthly maintenance reminders and invoice checklist (role_ids, comma-separated)'],
       ['ORDER_STAGES', 'Asked supplier|Supplier quoted|Confirmed with supplier|Pickup / delivery set|Received', 'Steps of a material order, in order, separated by |'],
       ['ORDER_CHASE_DAYS', '3', 'Remind when an order has waited this many days for a supplier quote or for our confirmation'],
@@ -92,12 +93,12 @@ const SEED = {
     ],
   },
   'Users': {
-    headers: ['email', 'display_name', 'role_ids', 'active', 'calendar_color', 'phone', 'added_on', 'note'],
+    headers: ['email', 'display_name', 'role_ids', 'active', 'calendar_color', 'phone', 'added_on', 'note', 'on_calendar'],
     widths: [240, 120, 170, 70, 110, 120, 100, 220],
     note: 'email = the Google account the person signs in with. role_ids = one or more Roles.role_id, comma-separated. ' +
           'To remove access set active = FALSE (never delete the row: old reports still point to it).',
     rows: [
-      ['kxli9742@gmail.com', 'Kaixin', 'admin', true, '#7A5195', '', '2026-10-18', 'Owner'],
+      ['kxli9742@gmail.com', 'Kaixin', 'admin', true, '', '', '2026-10-18', 'Owner', false],
       ['', 'Chris', 'manager,technician', true, '#1F77B4', '', '2026-10-18', 'TODO: Google email'],
       ['', 'Duke', 'technician', true, '#2CA02C', '', '2026-10-18', 'TODO: Google email'],
       ['', 'Kyle', 'office', true, '#FF7F0E', '', '2026-10-18', 'TODO: Google email'],
@@ -160,34 +161,42 @@ const SEED = {
   'Projects': {
     headers: ['project_id', 'type_id', 'segment_id', 'site_id', 'title', 'status', 'owner_email',
               'folder_id', 'folder_url', 'created_at', 'created_by', 'notes', 'stage', 'stage_at', 'site_name', 'addr_key',
-              'customer', 'contact', 'value', 'updated_at', 'payment_plan'],
+              'customer', 'contact', 'value', 'updated_at', 'payment_plan', 'scope', 'materials', 'scope_by', 'scope_at'],
     widths: [130, 70, 90, 90, 240, 130, 200, 260, 300, 150, 200, 220, 180, 150, 220, 100, 180, 220, 90, 150, 300], rows: [],
   },
   'Project Stages': {
-    headers: ['type_id', 'order', 'stage', 'segments', 'follow_up_days', 'reminder', 'notes'],
-    widths: [80, 60, 240, 90, 110, 260, 300],
+    headers: ['type_id', 'order', 'stage', 'segments', 'follow_up_days', 'reminder', 'notes', 'assign_roles', 'form'],
+    widths: [80, 60, 260, 90, 110, 260, 300, 120, 80],
     note: 'Steps of each project type, in order. segments: ALL, COM or RES. follow_up_days: remind if a project sits in this ' +
-          'step longer than this (0 = never). The last step closes the project.',
+          'step longer than this (0 = never). assign_roles: who gets a checkbox for this step (ticking it moves the project on). ' +
+          'form = scope: Chris writes what to do and which materials before the quote goes to Kyle. The last step closes the project.',
     rows: [
-      ['INS', 1, 'Lead / screening', 'ALL', 0, '', 'Bid or enquiry received; decide whether to go for it'],
-      ['INS', 2, 'Site assessment', 'ALL', 0, '', 'Visit, measure, photos'],
-      ['INS', 3, 'Quote sent', 'ALL', 7, 'Follow up the quote', 'Chris approves the quote before it goes out'],
-      ['INS', 4, 'Quote accepted', 'ALL', 0, '', 'Signed / deposit received'],
-      ['INS', 5, 'Materials ordered', 'ALL', 14, 'Check the material order', 'Link the orders to this project'],
-      ['INS', 6, 'Installation scheduled', 'ALL', 0, '', 'Workers and dates in the K.E Schedule'],
-      ['INS', 7, 'Installed', 'ALL', 0, '', ''],
-      ['INS', 8, 'TSSA inspection booked', 'COM', 14, 'Check the TSSA inspection date', 'Commercial only'],
-      ['INS', 9, 'TSSA report received', 'COM', 0, '', 'Save the report in 06_TSSA Reports & Issues'],
-      ['INS', 10, 'Maintenance contract sent', 'COM', 14, 'Follow up the maintenance contract', 'Custom contract per building'],
-      ['INS', 10, 'Maintenance package offered', 'RES', 14, 'Follow up the maintenance package', '6- or 12-month package'],
-      ['INS', 11, 'Closed', 'ALL', 0, '', ''],
-      ['REP', 1, 'Request received', 'ALL', 0, '', ''],
-      ['REP', 2, 'Site visit / diagnosis', 'ALL', 0, '', ''],
-      ['REP', 3, 'Quote sent', 'ALL', 7, 'Follow up the repair quote', 'Chris approves the quote before it goes out'],
-      ['REP', 4, 'Approved by customer', 'ALL', 0, '', ''],
-      ['REP', 5, 'Parts ordered', 'ALL', 14, 'Check the parts order', ''],
-      ['REP', 6, 'Repair done', 'ALL', 3, 'Send the invoice', ''],
-      ['REP', 7, 'Closed', 'ALL', 0, '', ''],
+      ['INS', 1, 'Lead / screening', 'ALL', 0, '', 'Bid or enquiry received; decide whether to go for it', 'office', ''],
+      ['INS', 2, 'Site assessment', 'ALL', 0, '', 'Visit, measure, photos', '', ''],
+      ['INS', 3, 'Chris confirms scope & materials', 'ALL', 2, 'Chris: confirm what to do and the materials', 'Chris writes the work and materials; then it goes to Kyle', 'manager', 'scope'],
+      ['INS', 4, 'Quote being prepared', 'ALL', 3, 'Prepare the quote', 'Kyle prepares the quote from Chris\'s scope', 'office', ''],
+      ['INS', 5, 'Quote sent', 'ALL', 7, 'No answer in 7 days: follow up the quote', 'Sent from the sales mailbox', '', ''],
+      ['INS', 6, 'Quote accepted', 'ALL', 0, '', 'Signed / deposit received', '', ''],
+      ['INS', 7, 'Materials ordered', 'ALL', 14, 'Check the material order', 'Link the orders to this project', 'office', ''],
+      ['INS', 8, 'Installation scheduled', 'ALL', 0, '', 'Workers and dates in the K.E Schedule', '', ''],
+      ['INS', 9, 'Installed', 'ALL', 0, '', '', '', ''],
+      ['INS', 10, 'TSSA inspection booked', 'COM', 14, 'Check the TSSA inspection date', 'Commercial only', 'office', ''],
+      ['INS', 11, 'TSSA report received', 'COM', 0, '', 'Save the report in 06_TSSA Reports & Issues', '', ''],
+      ['INS', 12, 'Maintenance contract sent', 'COM', 14, 'Follow up the maintenance contract', 'Custom contract per building', '', ''],
+      ['INS', 12, 'Maintenance package offered', 'RES', 14, 'Follow up the maintenance package', '6- or 12-month package', '', ''],
+      ['INS', 13, 'Kyle: all done', 'ALL', 0, 'Check everything is finished', 'Tick when the job is fully done', 'office', ''],
+      ['INS', 14, 'Closed', 'ALL', 0, '', '', '', ''],
+      ['REP', 1, 'Request received', 'ALL', 0, '', 'Repair / replacement request', 'office', ''],
+      ['REP', 2, 'Site visit / diagnosis', 'ALL', 0, '', '', '', ''],
+      ['REP', 3, 'Chris confirms scope & materials', 'ALL', 2, 'Chris: confirm what to do and the materials', 'Chris writes the work and materials; then it goes to Kyle', 'manager', 'scope'],
+      ['REP', 4, 'Quote being prepared', 'ALL', 3, 'Prepare the repair quote', 'Kyle prepares the quote from Chris\'s scope', 'office', ''],
+      ['REP', 5, 'Quote sent', 'ALL', 7, 'No answer in 7 days: follow up the repair quote', 'Sent from the sales mailbox', '', ''],
+      ['REP', 6, 'Approved by customer', 'ALL', 0, '', '', '', ''],
+      ['REP', 7, 'Parts ordered', 'ALL', 14, 'Check the parts order', '', 'office', ''],
+      ['REP', 8, 'Repair scheduled', 'ALL', 0, '', '', '', ''],
+      ['REP', 9, 'Repair done', 'ALL', 3, 'Send the invoice', '', '', ''],
+      ['REP', 10, 'Kyle: all done', 'ALL', 0, 'Check everything is finished', 'Tick when the job is fully done', 'office', ''],
+      ['REP', 11, 'Closed', 'ALL', 0, '', '', '', ''],
     ],
   },
   'Project Events': {
@@ -217,7 +226,7 @@ const SEED = {
   },
   'Maintenance Plan': {
     headers: ['site_id', 'address', 'frequency', 'due_months', 'due_months_override', 'basis', 'value', 'qty', 'contact_name',
-              'contact_email', 'contact_phone', 'done_months', 'year', 'updated_at'],
+              'contact_email', 'contact_phone', 'done_months', 'year', 'updated_at', 'segment', 'package'],
     widths: [80, 280, 100, 200, 180, 220, 90, 60, 180, 220, 130, 200, 60, 150],
     note: 'Rebuilt every hour from this year\'s company Maintenance Record. due_months is worked out from the visits in the record ' +
           '(quarterly / semi-annual months follow last year\'s pattern). To correct a site, type months in due_months_override ' +
@@ -225,11 +234,17 @@ const SEED = {
     rows: [],
   },
   'Mailboxes': {
-    headers: ['mailbox', 'owner_name', 'key', 'active', 'last_ingest', 'last_count', 'note'],
-    widths: [220, 120, 300, 70, 150, 90, 420],
+    headers: ['mailbox', 'owner_name', 'key', 'active', 'last_ingest', 'last_count', 'note', 'purpose', 'follow_up_days',
+              'unanswered_days', 'track_all_sent'],
+    widths: [220, 120, 300, 70, 150, 90, 420, 120, 110, 120, 110],
     note: 'Mailboxes whose owner installed the read-only collector in their own Google account. key is a password the ' +
           'collector sends; setup() fills it. active = FALSE stops accepting mail from that box.',
-    rows: [['pm@krysnorelevator.ca', 'Kyle', '', false, '', '', 'Kyle installs the collector in his own account, then Kaixin sets active = TRUE']],
+    rows: [
+      ['pm@krysnorelevator.ca', 'Kyle', '', false, '', '', 'Project manager box: customers we already work with. The OA flags emails left unanswered.',
+       'project manager', '', 2, false],
+      ['sales@krysnorelevator.ca', 'Kyle', '', false, '', '', 'Sales box: quotes, follow-ups and outreach to new customers. The OA flags quotes with no reply after 7 days.',
+       'sales', 7, 2, true],
+    ],
   },
   'Mail Rules': {
     headers: ['category', 'pattern', 'where', 'gmail_terms', 'create_task', 'assign_roles', 'active', 'notes'],
@@ -249,6 +264,24 @@ const SEED = {
       ['Invoice', '\\b(invoice|payment|remittance|overdue|e-?transfer|cheque)\\b', 'any', '{invoice payment remittance overdue e-transfer cheque}', false, 'office', true, ''],
       ['Task', '\\b(urgent|asap|reminder|action required|deadline)\\b', 'any', '{urgent asap reminder "action required" deadline}', false, 'office', true, ''],
     ],
+  },
+  'Mail Threads': {
+    headers: ['thread_id', 'mailbox', 'subject', 'counterpart', 'categories', 'site_name', 'first_at', 'last_in_at', 'last_out_at',
+              'waiting_on', 'updated_at', 'link'],
+    widths: [160, 200, 320, 240, 160, 200, 150, 150, 150, 100, 150, 260],
+    note: 'One row per email conversation the collector saw: when the customer last wrote and when we last wrote. ' +
+          'waiting_on = us (they wrote last) or them (we wrote last). Used for "not answered" and "no reply in 7 days" reminders.',
+    rows: [],
+  },
+  'Email Templates': {
+    headers: ['template_id', 'subject', 'body', 'notes'],
+    widths: [140, 360, 600, 300],
+    note: 'Drafts the OA prepares for Kyle. {first_name} {customer} {address} {month} {package} {frequency} are filled in.',
+    rows: [['RES_MAINT', 'Krysnor Elevator – your home elevator maintenance in {month}',
+      'Hi {first_name},\n\nThis is Kyle from Krysnor Elevator. Your home elevator at {address} is due for its {frequency} maintenance visit in {month}.\n\n' +
+      'Could you let us know a few days and times that work for you? The visit takes about one to two hours and includes a full safety check, ' +
+      'lubrication and adjustment.\n\nThank you,\nKyle\nKrysnor Elevator\npm@krysnorelevator.ca',
+      'Residential maintenance reminder. Kyle opens it as a Gmail draft from the This month page, checks it and sends it.']],
   },
   'Mail': {
     headers: ['mail_id', 'thread_id', 'mailbox', 'received_at', 'direction', 'from', 'to', 'subject', 'snippet', 'excerpt', 'categories',
@@ -370,7 +403,7 @@ const BACKUP_NAME_PREFIX = 'Krysnor OA Master backup ';
 const TEXT_COLUMNS = ['report_id', 'project_id', 'site_id', 'unit_id', 'arrived', 'left', 'contact_phone', 'phone', 'task_id', 'ref_id',
                       'installation_no', 'scheduled_week', 'contract_expiry',
                       'client_id', 'amends_report_id', 'folder_id', 'file_id', 'order_id', 'price_id', 'part_no', 'mail_id',
-                      'thread_id', 'quote_ref', 'key', 'month', 'ready_date', 'date', 'date_value', 'due_months', 'due_months_override', 'done_months', 'event_id', 'payment_plan'];
+                      'thread_id', 'quote_ref', 'key', 'month', 'ready_date', 'date', 'date_value', 'due_months', 'due_months_override', 'done_months', 'event_id', 'payment_plan', 'template_id'];
 
 // ───────────────────────────── Setup ─────────────────────────────
 
@@ -383,6 +416,8 @@ function setup() {
   installBackupTrigger_();
   installSyncTrigger_();
   installNotificationTrigger_();
+  addMissingSeedRows_('Mailboxes', 'mailbox');
+  migrateProjectStages_();
   fillMailboxKeys_();
   fillEventIds_();
   protectAllTabs_(ss);
@@ -695,7 +730,7 @@ function doPost(e) {
   try {
     const body = JSON.parse(e.postData.contents);
     // The read-only mail collector in Kyle's own account has no Google sign-in here: it sends its mailbox key instead.
-    if (body.action === 'ingestMail' || body.action === 'mailConfig') return json_({ ok: true, data: ingestMail_(body) });
+    if (body.action === 'ingestMail' || body.action === 'mailConfig' || body.action === 'threadStatus') return json_({ ok: true, data: ingestMail_(body) });
     email = verifyIdToken_(body.token);
     const user = getUser_(email);
     if (!user) throw new Error('This Google account has no access to Krysnor OA. Ask Kaixin to add you.');
@@ -934,7 +969,11 @@ const ACTIONS = {
     run: function () {
       return {
         users: readTable_('Users').filter(function (u) { return isTrue_(u.active) && u.email; })
-          .map(function (u) { return { name: u.display_name, roles: u.role_ids, color: u.calendar_color }; }),
+          .map(function (u) {
+            // Not on the calendar: on_calendar = FALSE, or left blank for someone who is only admin (Kaixin).
+            const onCal = String(u.on_calendar).trim() === '' ? String(u.role_ids).trim() !== 'admin' : isTrue_(u.on_calendar);
+            return { name: u.display_name, roles: u.role_ids, color: onCal ? u.calendar_color : '', on_calendar: onCal };
+          }),
         projectTypes: readTable_('Project Types').filter(function (t) { return isTrue_(t.active); }),
         segments: readTable_('Segments').map(function (s) { return { segment_id: s.segment_id, name: s.name }; }),
         callTypes: readTable_('Call Types').filter(function (c) { return isTrue_(c.active); })
@@ -1017,6 +1056,11 @@ const ACTIONS = {
     },
   },
   projectStep: { permission: 'project.edit', run: function (user, p) { return projectStep_(user, p); } },
+  confirmScope: {
+    // Chris: what has to be done and which materials, before Kyle prepares the quote.
+    permission: 'project.edit',
+    run: function (user, p) { return confirmScope_(user, p); },
+  },
   linkMail: { permission: 'mail.view', run: function (user, p) { return linkMail_(user, p); } },
   invoices: { permission: 'view.all', run: function (user) { return invoicesFor_(user); } },
   editTime: {
@@ -1463,7 +1507,8 @@ function syncSources() {
             const ym = /^(20\d{2}) Maintenance-/i.exec(tab);
             if (ym && String(src.source_id) === String(settings.SITES_IMPORT_SOURCE || 'MAINT')) {
               const parsed = parseMaintenanceContracts_(values);
-              if (/commercial/i.test(tab)) contractsByYear[ym[1]] = (contractsByYear[ym[1]] || []).concat(parsed);
+              if (/commercial/i.test(tab)) contractsByYear[ym[1]] = (contractsByYear[ym[1]] || []).concat(parsed.map(function (c) { c.segment = 'COM'; return c; }));
+              if (/residential/i.test(tab)) contractsByYear[ym[1]] = (contractsByYear[ym[1]] || []).concat(parsed.map(residentialFrequency_));
               const v = maintenanceVisits_(parsed, Number(ym[1]), ctx);
               v.forEach(function (it) { items.push(it); });
               count += v.length;
@@ -1832,7 +1877,7 @@ function refreshNotifications() {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
-    try { ensureMonthTasks_(); ensureOrderTasks_(); ensureProjectTasks_(); } catch (err) { Logger.log('Reminders: ' + err.message); }
+    try { ensureMonthTasks_(); ensureOrderTasks_(); ensureProjectTasks_(); ensureMailTasks_(); } catch (err) { Logger.log('Reminders: ' + err.message); }
     let now = new Date();
     const last = PropertiesService.getScriptProperties().getProperty('NOTIFY_BATCH');
     if (last && new Date(last).getTime() >= now.getTime()) now = new Date(new Date(last).getTime() + 1000);  // batches never share a time
@@ -1886,7 +1931,7 @@ function notificationsFor_(user, batchAt) {
   const groups = {};
   const out = [];
   items.forEach(function (it) {
-    const m = /^(MNT|MINV):(\d{4}-\d{2}):/.exec(it.key);
+    const m = /^(MNT|MINV|MEML):(\d{4}-\d{2}):/.exec(it.key);
     if (!m) { out.push(it); return; }
     const g = groups[m[1] + m[2]] || (groups[m[1] + m[2]] = { task_id: '', group: true, type: it.type, ref_id: '', created_at: it.created_at,
       link: '#/month?m=' + m[2], can_complete: false, total: 0, open: 0, month: m[2], kind: m[1] });
@@ -1905,6 +1950,7 @@ function notificationsFor_(user, batchAt) {
     const label = Utilities.formatDate(new Date(g.month + '-15T12:00:00'), 'America/Toronto', 'MMMM');
     g.status = g.open ? 'open' : 'done';
     g.title = g.kind === 'MNT' ? label + ' maintenance: ' + g.open + ' of ' + g.total + ' sites not done yet'
+            : g.kind === 'MEML' ? label + ' residential booking emails: ' + g.open + ' of ' + g.total + ' not sent yet'
                                : label + ' maintenance invoices: ' + g.open + ' of ' + g.total + ' not sent yet';
   });
   return { batch_at: want, batches: batches.slice(0, 90), items: out };
@@ -1923,8 +1969,11 @@ function completeTask_(user, p) {
     if (String(t.status) === 'done') return { task_id: t.task_id, status: 'done' };
     const sh = SpreadsheetApp.getActive().getSheetByName('Tasks');
     const head = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
+    if (/^PSTEP:/.test(String(t.key)) && String(t.key).split(':')[3] === 'scope') throw new Error('Chris confirms this on the project page (work to do and materials).');
     writeRowFields_(sh, head, i + 2, { status: 'done', done_at: new Date(), done_by: user.email, note: clean_(p.note, 500) });
     audit_(user.email, 'task.done', t.task_id, t.title + (p.note ? ' · ' + p.note : ''));
+    // Ticking a project step's checkbox moves the project to its next step.
+    if (/^PSTEP:/.test(String(t.key))) advanceProjectFromTask_(user, t, p.note);
     return { task_id: t.task_id, status: 'done' };
   } finally {
     lock.releaseLock();
@@ -2052,7 +2101,7 @@ function maintenancePlan_(byYear, year) {
       for (let m = phase; m < 12; m += step) due.push(m);
       basis = best > 0 ? 'from visits ' + (old ? (year - 1) + '–' : '') + year : 'no visits recorded yet: assumed';
     }
-    return { address: c.address, frequency: c.frequency, due: due, done: done, basis: basis, value: c.value, qty: c.qty,
+    return { segment: c.segment || 'COM', package: c.contractType || '', address: c.address, frequency: c.frequency, due: due, done: done, basis: basis, value: c.value, qty: c.qty,
              contact_name: c.contactName, contact_email: c.contactEmail, contact_phone: c.contactPhone, months: c.months };
   });
 }
@@ -2077,7 +2126,7 @@ function writeMaintenancePlan_(plan, year) {
       if (same && done.indexOf(r.server_time.getMonth()) < 0) done.push(r.server_time.getMonth());
     });
     done.sort(function (a, b) { return a - b; });
-    const rec = { site_id: site.site_id || '', address: p.address, frequency: p.frequency, due_months: names(p.due),
+    const rec = { segment: p.segment, package: p.package, site_id: site.site_id || '', address: p.address, frequency: p.frequency, due_months: names(p.due),
                   due_months_override: overrides[addrKey_(p.address)] || '', basis: p.basis, value: p.value, qty: p.qty,
                   contact_name: p.contact_name, contact_email: p.contact_email, contact_phone: p.contact_phone,
                   done_months: names(done), year: year, updated_at: new Date() };
@@ -2115,6 +2164,14 @@ function ensureMonthTasks_(when) {
     if (due.indexOf(m) < 0) return;
     const id = planId_(r);
     const value = money_(r.value);
+    if (String(r.segment) === 'RES') {
+      const rr = s.RES_MAINT_ROLES || roles;
+      tasks.push({ key: 'MNT:' + ym + ':' + id, type: 'Maintenance', month: ym, site_id: r.site_id, assign_roles: rr,
+                   title: monthName + ' residential maintenance due · ' + r.address + ' (' + r.frequency + ')', link: '#/month' });
+      tasks.push({ key: 'MEML:' + ym + ':' + id, type: 'Residential email', month: ym, site_id: r.site_id, assign_roles: rr,
+                   title: 'Email ' + (r.contact_name || 'the customer') + ' to book ' + monthName + ' maintenance · ' + r.address, link: '#/month' });
+      return;
+    }
     tasks.push({ key: 'MNT:' + ym + ':' + id, type: 'Maintenance', month: ym, site_id: r.site_id, assign_roles: roles,
                  title: monthName + ' maintenance due · ' + r.address + ' (' + r.frequency + ')', link: r.site_id ? '#/sites/' + r.site_id : '' });
     tasks.push({ key: 'MINV:' + ym + ':' + id, type: 'Maintenance invoice', month: ym, site_id: r.site_id, assign_roles: roles, amount: value,
@@ -2134,7 +2191,7 @@ function ensureMonthTasks_(when) {
 function monthChecklist_(user, ym) {
   const month = /^\d{4}-\d{2}$/.test(String(ym || '')) ? ym : ym_();
   const mine = function (t) { return user.isAdmin || String(t.assign_roles || '').split(',').some(function (x) { return user.roles.indexOf(x.trim()) >= 0; }); };
-  const all = readTable_('Tasks').filter(function (t) { return /^(MNT|MINV):/.test(String(t.key)) && mine(t); });
+  const all = readTable_('Tasks').filter(function (t) { return /^(MNT|MINV|MEML):/.test(String(t.key)) && mine(t); });
   const months = unique_(all.map(function (t) { return String(t.month || String(t.key).split(':')[1]); })).sort().reverse();
   const plan = {};
   readTable_('Maintenance Plan').forEach(function (r) { plan[planId_(r)] = r; });
@@ -2143,9 +2200,12 @@ function monthChecklist_(user, ym) {
     return { task_id: t.task_id, type: t.type, title: t.title, status: t.status, done_by: t.done_by, done_at: t.done_at, note: t.note,
              site_id: t.site_id || p.site_id || '', address: p.address || '', frequency: p.frequency || '', amount: t.amount,
              contact_name: p.contact_name || '', contact_email: p.contact_email || '', contact_phone: p.contact_phone || '',
-             due_months: p.due_months_override || p.due_months || '', basis: p.basis || '' };
+             due_months: p.due_months_override || p.due_months || '', basis: p.basis || '', segment: p.segment || 'COM', package: p.package || '' };
   });
-  return { month: month, months: months.length ? months : [month], hst: Number(getSettings_().HST_RATE || 13), items: items };
+  const tpl = readTable_('Email Templates').filter(function (x) { return x.template_id === 'RES_MAINT'; })[0] || {};
+  const box = readTable_('Mailboxes').filter(function (b) { return /project/i.test(String(b.purpose)); })[0] || {};
+  return { month: month, months: months.length ? months : [month], hst: Number(getSettings_().HST_RATE || 13), items: items,
+           template: { subject: tpl.subject || '', body: String(tpl.body || '').replace(/\\n/g, '\n') }, sendFrom: box.mailbox || 'pm@krysnorelevator.ca' };
 }
 
 // ───────── orders, supplier quotes and part prices ─────────
@@ -2315,19 +2375,26 @@ function saveProject_(user, p) {
                                 stage: stages.length ? stages[0].stage : '', stage_at: new Date() }, fields);
     appendRecord_('Projects', rec);
     appendRecord_('Project Events', { project_id: id, at: new Date(), stage: rec.stage, by: user.email, note: clean_(p.first_note, 1000) || 'Project opened' });
+    ensureStepTask_(rec);
     if (p.mail_id) linkMailRow_(p.mail_id, 'project', id);
     audit_(user.email, 'project.create', id, title);
     return { project: rec };
   });
 }
 
-function projectStep_(user, p) {
-  return withLock_(function () {
+function projectStep_(user, p) { return withLock_(function () { return projectStepCore_(user, p); }); }
+function projectStepCore_(user, p) {
+  return (function () {
     const pr = readTable_('Projects').filter(function (x) { return x.project_id === p.project_id; })[0];
     if (!pr) throw new Error('Project ' + p.project_id + ' does not exist.');
     const names = projectStages_(pr.type_id, pr.segment_id).map(function (s) { return s.stage; }).concat(['Lost / cancelled']);
     const stage = clean_(p.stage, 80);
     if (stage && names.indexOf(stage) < 0) throw new Error('Unknown stage: ' + stage);
+    // Every quote goes to Chris first: no one but the admin moves past his step before the work and materials are written.
+    if (stage && stage !== 'Lost / cancelled' && !user.isAdmin && !String(pr.scope || '').trim() && !p.scopeConfirmed) {
+      const sc = projectStages_(pr.type_id, pr.segment_id).filter(function (x) { return String(x.form) === 'scope'; })[0];
+      if (sc && names.indexOf(stage) > names.indexOf(sc.stage)) throw new Error('Chris needs to confirm the work and materials first (step "' + sc.stage + '").');
+    }
     const fields = { updated_at: new Date() };
     if (stage && stage !== pr.stage) {
       fields.stage = stage; fields.stage_at = new Date();
@@ -2339,9 +2406,14 @@ function projectStep_(user, p) {
     if (p.mail_id) linkMailRow_(p.mail_id, 'project', pr.project_id);
     if (fields.stage) closeTasks_(function (t) { return /^PRJ/.test(String(t.key)) && String(t.key).split(':')[1] === pr.project_id; }, user.email, 'Moved to ' + fields.stage);
     if (fields.stage) ensureProjectInvoices_(Object.assign({}, pr, fields));
+    if (fields.stage) {
+      // The step it left: its checkbox is no longer needed. The step it entered: give that role its checkbox.
+      closeTasks_(function (t) { return /^PSTEP:/.test(String(t.key)) && String(t.key).split(':')[1] === pr.project_id; }, user.email, 'Moved to ' + fields.stage);
+      ensureStepTask_(Object.assign({}, pr, fields));
+    }
     audit_(user.email, 'project.step', pr.project_id, (stage || 'note') + (p.note ? ' · ' + p.note : ''));
     return { project: Object.assign(pr, fields) };
-  });
+  })();
 }
 
 /** Daily: "quote sent 7 days ago, follow up" and any other stage with follow_up_days. */
@@ -2371,7 +2443,18 @@ function ensureProjectTasks_() {
 function ingestMail_(body) {
   const box = readTable_('Mailboxes').filter(function (m) { return norm_(m.mailbox) === norm_(body.mailbox) && isTrue_(m.active); })[0];
   if (!box || !String(box.key || '').trim() || String(box.key).trim() !== String(body.key || '').trim()) throw new Error('Mailbox not allowed.');
-  if (body.action === 'mailConfig') return { query: mailQuery_(), lookbackDays: Number(getSettings_().MAIL_LOOKBACK_DAYS || 3) };
+  if (body.action === 'mailConfig') {
+    const q = mailQuery_();
+    return { query: isTrue_(box.track_all_sent) ? '(in:sent OR ' + q + ')' : q, lookbackDays: Number(getSettings_().MAIL_LOOKBACK_DAYS || 3),
+             watch: watchedThreads_(norm_(body.mailbox)) };
+  }
+  if (body.action === 'threadStatus') {
+    return withLock_(function () {
+      (body.threads || []).slice(0, 300).forEach(function (th) { updateThread_(box, th, null); });
+      ensureMailTasks_();
+      return { threads: (body.threads || []).length };
+    });
+  }
   return withLock_(function () {
     const have = {};
     readTable_('Mail').forEach(function (m) { have[String(m.mail_id)] = true; });
@@ -2412,6 +2495,7 @@ function ingestMail_(body) {
       };
       appendRecord_('Mail', rec);
       added.push(rec);
+      if (msg.thread) updateThread_(box, msg.thread, rec);
       if (order) appendRecord_('Order Events', { order_id: order.order_id, at: rec.received_at, stage: '', by: rec.mailbox,
                                                  note: (rec.direction === 'out' ? 'Email sent: ' : 'Email from ' + from + ': ') + subject, mail_id: id });
       rules.forEach(function (r) {
@@ -2422,6 +2506,8 @@ function ingestMail_(body) {
       });
     });
     ensureTasks_(tasks);
+    (body.threads || []).forEach(function (th) { updateThread_(box, th, null); });
+    ensureMailTasks_();
     const sh = SpreadsheetApp.getActive().getSheetByName('Mailboxes');
     const i = readTable_('Mailboxes').findIndex(function (m) { return norm_(m.mailbox) === norm_(body.mailbox); });
     writeRowFields_(sh, headersOf_('Mailboxes'), i + 2, { last_ingest: new Date(), last_count: added.length });
@@ -2606,4 +2692,165 @@ function editTime_(user, p) {
     audit_(user.email, 'time.edit', p.table + ' ' + p.id, p.field + ': ' + old + ' → ' + (value instanceof Date ? value.toISOString() : value));
     return { table: p.table, id: p.id, field: p.field, old: old, value: value instanceof Date ? value.toISOString() : value };
   });
+}
+
+// ═════════════════════════════ Step 6: Chris confirms quotes · sales / PM mailbox checks · residential maintenance ═════════════════════════════
+
+/** Residential rows: frequency from the package ("Silver 2", "(No Contract) 1 visit", "4 visits"). */
+function residentialFrequency_(c) {
+  const t = String(c.contractType || '');
+  const n = Number((/(\d+)\s*visits?/i.exec(t) || /(?:gold|silver|sliver)\s*(\d+)/i.exec(t) || [0, 1])[1]) || 1;
+  c.frequency = n >= 12 ? 'Monthly' : n >= 4 ? 'Quarterly' : n >= 2 ? 'Semi-annual' : 'Annual';
+  c.segment = 'RES';
+  return c;
+}
+
+/** Adds seed rows whose key column value is missing (e.g. the sales mailbox added in a later version). */
+function addMissingSeedRows_(name, keyCol) {
+  const sh = SpreadsheetApp.getActive().getSheetByName(name);
+  if (!sh) return;
+  const head = headersOf_(name);
+  const have = readTable_(name).map(function (r) { return norm_(r[keyCol]); });
+  const def = SEED[name];
+  def.rows.forEach(function (r) {
+    const rec = {}; def.headers.forEach(function (h, i) { rec[h] = r[i]; });
+    if (have.indexOf(norm_(rec[keyCol])) >= 0) {
+      // Fill new columns on an existing row only where they are still blank.
+      const i = readTable_(name).findIndex(function (x) { return norm_(x[keyCol]) === norm_(rec[keyCol]); });
+      const cur = readTable_(name)[i];
+      const fill = {};
+      ['purpose', 'follow_up_days', 'unanswered_days', 'track_all_sent'].forEach(function (k) { if (head.indexOf(k) >= 0 && String(cur[k]).trim() === '' && rec[k] !== undefined) fill[k] = rec[k]; });
+      if (Object.keys(fill).length) writeRowFields_(sh, head, i + 2, fill);
+      return;
+    }
+    sh.appendRow(head.map(function (h) { return rec[h] === undefined ? '' : rec[h]; }));
+  });
+}
+
+/** Version 2 of the project steps (Chris confirms scope & materials; Kyle's checkboxes). Runs once. */
+function migrateProjectStages_() {
+  const props = PropertiesService.getScriptProperties();
+  if (props.getProperty('STAGES_VERSION') === '2') return;
+  const sh = SpreadsheetApp.getActive().getSheetByName('Project Stages');
+  const rows = readTable_('Project Stages');
+  if (!rows.some(function (r) { return /chris confirms/i.test(String(r.stage)); })) {
+    const head = headersOf_('Project Stages');
+    if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, head.length).clearContent();
+    const def = SEED['Project Stages'];
+    const out = def.rows.map(function (r) { return head.map(function (h) { const i = def.headers.indexOf(h); return i >= 0 ? r[i] : ''; }); });
+    sh.getRange(2, 1, out.length, head.length).setValues(out);
+  }
+  props.setProperty('STAGES_VERSION', '2');
+}
+
+/** The checkbox for the step a project just entered (if that step has assign_roles). */
+function ensureStepTask_(pr) {
+  const st = projectStages_(pr.type_id, pr.segment_id).filter(function (s) { return s.stage === pr.stage; })[0];
+  if (!st || !String(st.assign_roles || '').trim()) return 0;
+  const form = String(st.form || '').trim();
+  return ensureTasks_([{ key: 'PSTEP:' + pr.project_id + ':' + pr.stage + ':' + (form || 'tick') + ':' + day_(new Date()), type: 'Project step',
+    assign_roles: st.assign_roles, ref_id: pr.project_id, site_id: pr.site_id || '', link: '#/projects/' + pr.project_id,
+    title: (st.reminder || pr.stage) + ': ' + pr.title + (pr.site_name ? ' · ' + pr.site_name : '') }]).length;
+}
+
+function advanceProjectFromTask_(user, t, note) {
+  const parts = String(t.key).split(':');
+  const pr = readTable_('Projects').filter(function (x) { return x.project_id === parts[1]; })[0];
+  if (!pr || pr.stage !== parts[2]) return;
+  const names = projectStages_(pr.type_id, pr.segment_id).map(function (s) { return s.stage; });
+  const next = names[names.indexOf(pr.stage) + 1];
+  if (next) projectStepCore_(user, { project_id: pr.project_id, stage: next, note: '✓ ' + pr.stage + (note ? ' · ' + note : '') });
+}
+
+function confirmScope_(user, p) {
+  return withLock_(function () {
+    const pr = readTable_('Projects').filter(function (x) { return x.project_id === p.project_id; })[0];
+    if (!pr) throw new Error('Project ' + p.project_id + ' does not exist.');
+    if (!user.isAdmin && user.roles.indexOf('manager') < 0) throw new Error('Chris (manager) confirms the scope.');
+    const scope = clean_(p.scope, 4000), materials = clean_(p.materials, 4000);
+    if (!scope) throw new Error('Write what needs to be done.');
+    updateRecord_('Projects', 'project_id', pr.project_id, { scope: scope, materials: materials, scope_by: user.email, scope_at: new Date() });
+    closeTasks_(function (t) { return /^PSTEP:/.test(String(t.key)) && String(t.key).split(':')[1] === pr.project_id && String(t.key).split(':')[3] === 'scope'; }, user.email, 'Scope confirmed');
+    const names = projectStages_(pr.type_id, pr.segment_id).map(function (s) { return s.stage; });
+    const st = projectStages_(pr.type_id, pr.segment_id).filter(function (s) { return String(s.form) === 'scope'; })[0];
+    const next = st ? names[names.indexOf(st.stage) + 1] : '';
+    const res = next && names.indexOf(pr.stage) <= names.indexOf(st.stage)
+      ? projectStepCore_(user, { project_id: pr.project_id, stage: next, scopeConfirmed: true, note: 'Scope: ' + scope.slice(0, 300) + (materials ? ' · Materials: ' + materials.slice(0, 300) : '') })
+      : { project: pr };
+    audit_(user.email, 'project.scope', pr.project_id, scope.slice(0, 200));
+    return res;
+  });
+}
+
+// ───────── mail conversations: unanswered (PM box) and no reply after 7 days (sales box) ─────────
+
+/** Threads still waiting for something, so the collector re-checks them even without new matching mail. */
+function watchedThreads_(mailbox) {
+  const since = Date.now() - 45 * 86400000;
+  return readTable_('Mail Threads').filter(function (t) {
+    return norm_(t.mailbox) === mailbox && (t.waiting_on === 'us' || t.waiting_on === 'them') && new Date(t.updated_at).getTime() > since;
+  }).map(function (t) { return t.thread_id; }).slice(0, 200);
+}
+
+/** th = { id, msgs: [{ at, out, from, to }] } from the collector (dates and addresses only). */
+function updateThread_(box, th, rec) {
+  if (!th || !th.id || !(th.msgs || []).length) return;
+  const msgs = th.msgs.map(function (m) { return { at: new Date(m.at), out: !!m.out, from: String(m.from || ''), to: String(m.to || '') }; })
+    .sort(function (a, b) { return a.at - b.at; });
+  const ins = msgs.filter(function (m) { return !m.out; }), outs = msgs.filter(function (m) { return m.out; });
+  const last = msgs[msgs.length - 1];
+  const fields = {
+    mailbox: norm_(box.mailbox), first_at: msgs[0].at, last_in_at: ins.length ? ins[ins.length - 1].at : '', last_out_at: outs.length ? outs[outs.length - 1].at : '',
+    waiting_on: last.out ? 'them' : 'us', updated_at: new Date(),
+    counterpart: clean_((last.out ? last.to : last.from) || (ins.length ? ins[0].from : ''), 300),
+    link: 'https://mail.google.com/mail/u/?authuser=' + encodeURIComponent(norm_(box.mailbox)) + '#all/' + th.id,
+  };
+  if (th.subject) fields.subject = clean_(th.subject, 300);
+  if (rec) { fields.subject = fields.subject || rec.subject; fields.categories = rec.categories; fields.site_name = rec.site_name; }
+  const all = readTable_('Mail Threads');
+  const i = all.findIndex(function (t) { return String(t.thread_id) === String(th.id); });
+  if (i < 0) appendRecord_('Mail Threads', Object.assign({ thread_id: th.id, subject: '', categories: '', site_name: '' }, fields));
+  else {
+    if (rec && all[i].categories) fields.categories = unique_(String(all[i].categories).split(',').concat(String(rec.categories || '').split(','))).filter(String).join(',');
+    writeRowFields_(SpreadsheetApp.getActive().getSheetByName('Mail Threads'), headersOf_('Mail Threads'), i + 2, fields);
+  }
+}
+
+/** Daily and after each collector run. */
+function ensureMailTasks_() {
+  const boxes = {};
+  readTable_('Mailboxes').forEach(function (b) { boxes[norm_(b.mailbox)] = b; });
+  const roles = getSettings_().MAIL_REMINDER_ROLES || 'office';
+  const now = Date.now();
+  const tasks = [];
+  const threads = readTable_('Mail Threads');
+  threads.forEach(function (t) {
+    const b = boxes[norm_(t.mailbox)]; if (!b) return;
+    const lastIn = t.last_in_at ? new Date(t.last_in_at).getTime() : 0, lastOut = t.last_out_at ? new Date(t.last_out_at).getTime() : 0;
+    const who = String(t.counterpart || '').replace(/<.*>/, '').trim() || t.counterpart;
+    const unans = Number(b.unanswered_days || 0), fu = Number(b.follow_up_days || 0);
+    const workRelated = !!String(t.categories || '').trim();
+    if (unans && lastIn > lastOut && workRelated && now - lastIn >= unans * 86400000) {
+      tasks.push({ key: 'UNANS:' + t.thread_id + ':' + day_(new Date(lastIn)), type: 'Not answered', assign_roles: roles, link: t.link, ref_id: t.thread_id,
+                   title: 'Not answered for ' + Math.floor((now - lastIn) / 86400000) + ' days: ' + (t.subject || '(no subject)') + ' — ' + who + ' (' + t.mailbox + ')' });
+    }
+    if (fu && lastOut > lastIn && now - lastOut >= fu * 86400000) {
+      tasks.push({ key: 'FU:' + t.thread_id + ':' + day_(new Date(lastOut)), type: 'Follow up', assign_roles: roles, link: t.link, ref_id: t.thread_id,
+                   title: 'No reply in ' + Math.floor((now - lastOut) / 86400000) + ' days — follow up: ' + (t.subject || '(no subject)') + ' → ' + who });
+    }
+    if (fu && lastIn > lastOut && lastOut > 0) {
+      tasks.push({ key: 'RPLY:' + t.thread_id + ':' + day_(new Date(lastIn)), type: 'Reply', assign_roles: roles, link: t.link, ref_id: t.thread_id,
+                   title: 'Reply from ' + who + ': ' + (t.subject || '(no subject)') + ' (' + t.mailbox + ')' });
+    }
+  });
+  const made = ensureTasks_(tasks).length;
+  // Close reminders the conversation has moved past.
+  const byId = {}; threads.forEach(function (t) { byId[t.thread_id] = t; });
+  closeTasks_(function (k) {
+    const m = /^(UNANS|FU):([^:]+):/.exec(String(k.key)); if (!m || !byId[m[2]]) return false;
+    const t = byId[m[2]];
+    const lastIn = t.last_in_at ? new Date(t.last_in_at).getTime() : 0, lastOut = t.last_out_at ? new Date(t.last_out_at).getTime() : 0;
+    return m[1] === 'UNANS' ? lastOut > lastIn : lastIn > lastOut;
+  }, 'Mailbox', 'Answered');
+  return made;
 }

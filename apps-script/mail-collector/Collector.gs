@@ -1,13 +1,17 @@
 /**
  * Krysnor OA – mail collector (READ-ONLY)
  * ---------------------------------------
- * Runs inside the mailbox owner's own Google account (Kyle: pm@krysnorelevator.ca), with his permission.
+ * Runs inside the mailbox's own Google account, with the owner's permission. The same file works for
+ * pm@krysnorelevator.ca (project manager: customers we already work with) and sales@krysnorelevator.ca
+ * (quotes, follow-ups, new customers): it uses whichever account it is installed in.
  *
  * What it does every 30 minutes:
  *   1. asks the OA which emails matter (words like quote, estimate, repair, order, pickup, install, TSSA …)
  *   2. searches this mailbox for recent matching emails
  *   3. sends the OA a short record of each one: date, from, to, subject, the first part of the message,
  *      attachment names and a link back to the email
+ *   4. for those conversations, sends only who wrote last and when (no text), so the OA can flag
+ *      emails nobody answered and quotes with no reply after 7 days
  *
  * What it can NOT do: the only Gmail permission it has is gmail.readonly. It cannot send, delete, move,
  * label or mark anything as read. Nothing in the mailbox changes. To stop it: run uninstall(), or delete this project.
@@ -16,20 +20,18 @@
  *   1. script.google.com → New project → name it "Krysnor OA mail collector"
  *   2. Project Settings (gear) → tick "Show appsscript.json manifest file in editor"
  *   3. Paste appsscript.json and this file (Collector.gs) over the default ones
- *   4. Paste the key Kaixin gives you into MAIL_KEY below, save
+ *   4. Paste the key Kaixin gives you for THIS mailbox into MAIL_KEY below, save
  *   5. Select install in the toolbar → Run → allow the permissions Google shows
  */
 
 const OA_URL = 'https://script.google.com/macros/s/AKfycbxL29V03kLn5WMkSO7eaJQHgBUUkCJjPHeXJvRCaTTnZgHlWKVli-zyRPl9Y-KqL3Fg/exec';
-const MAILBOX = 'pm@krysnorelevator.ca';
+const MAILBOX = Session.getActiveUser().getEmail().toLowerCase();   // the account this is installed in
 const MAIL_KEY = 'PASTE_THE_KEY_FROM_KAIXIN_HERE';
 const EXCERPT_CHARS = 1500;      // how much of each message the OA keeps
 const MAX_PER_RUN = 150;
 
 function install() {
-  if (Session.getActiveUser().getEmail().toLowerCase() !== MAILBOX) {
-    throw new Error('Run this while signed in as ' + MAILBOX + ' (you are ' + Session.getActiveUser().getEmail() + ').');
-  }
+  if (!/@krysnorelevator\.ca$/.test(MAILBOX)) throw new Error('Install this in the company mailbox account (you are ' + MAILBOX + ').');
   if (/PASTE/.test(MAIL_KEY)) throw new Error('Paste the key from Kaixin into MAIL_KEY first.');
   uninstall();
   ScriptApp.newTrigger('collect').timeBased().everyMinutes(30).create();
@@ -56,14 +58,33 @@ function collect() {
   } while (pageToken && ids.length < MAX_PER_RUN);
 
   let added = 0;
+  const seen = {};
   for (let i = 0; i < ids.length; i += 40) {
     const batch = ids.slice(i, i + 40).map(readMessage_);
+    batch.forEach(function (m) { if (!seen[m.threadId]) { seen[m.threadId] = true; m.thread = threadSummary_(m.threadId); } });
     const res = post_({ action: 'ingestMail', messages: batch });
     added += res.added || 0;
     batch.forEach(function (m) { sent.push(m.id); });
   }
   props.setProperty('SENT_IDS', JSON.stringify(sent.slice(-1500)));
-  return { looked_at: ids.length, saved_in_oa: added };
+  // Conversations the OA is waiting on: has the customer replied / have we answered?
+  const watch = (cfg.watch || []).filter(function (t) { return !seen[t]; }).slice(0, 150).map(function (t) {
+    try { return threadSummary_(t); } catch (e) { return null; }
+  }).filter(Boolean);
+  if (watch.length) post_({ action: 'threadStatus', threads: watch });
+  return { looked_at: ids.length, saved_in_oa: added, conversations_rechecked: watch.length };
+}
+
+/** Who wrote each message of a conversation and when: dates and addresses only, no text. */
+function threadSummary_(threadId) {
+  const th = Gmail.Users.Threads.get('me', threadId, { format: 'metadata', metadataHeaders: ['From', 'To', 'Subject'] });
+  let subject = '';
+  const msgs = (th.messages || []).filter(function (m) { return (m.labelIds || []).indexOf('DRAFT') < 0; }).map(function (m) {
+    const h = {}; (m.payload.headers || []).forEach(function (x) { h[x.name.toLowerCase()] = x.value; });
+    if (!subject) subject = h.subject || '';
+    return { at: new Date(Number(m.internalDate)).toISOString(), out: (m.labelIds || []).indexOf('SENT') >= 0, from: h.from || '', to: h.to || '' };
+  });
+  return { id: threadId, subject: subject, msgs: msgs };
 }
 
 function readMessage_(id) {
