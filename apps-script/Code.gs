@@ -44,6 +44,7 @@ const SEED = {
       ['MAX_UPLOAD_MB', '15', 'Largest single file the OA page may upload'],
       ['SITES_IMPORT_SOURCE', 'MAINT', 'Data Source whose maintenance tab feeds Sites and the Maintenance Log'],
       ['SITES_IMPORT_TAB', '{YEAR} Maintenance-Commercial', 'Tab name to import ({YEAR} = this year). Add |{YEAR} Maintenance-Residential to include residential'],
+      ['PAYMENT_PLANS', '50/50=50,50|45/45/10=45,45,10', 'Invoice splits offered on a project (name=percentages). Each part is billed at a step you pick'],
       ['HST_RATE', '13', 'Sales tax % added to maintenance invoice amounts on the This month checklist'],
       ['MAINT_REMINDER_ROLES', 'office', 'Who gets the monthly maintenance reminders and invoice checklist (role_ids, comma-separated)'],
       ['ORDER_STAGES', 'Asked supplier|Supplier quoted|Confirmed with supplier|Pickup / delivery set|Received', 'Steps of a material order, in order, separated by |'],
@@ -159,8 +160,8 @@ const SEED = {
   'Projects': {
     headers: ['project_id', 'type_id', 'segment_id', 'site_id', 'title', 'status', 'owner_email',
               'folder_id', 'folder_url', 'created_at', 'created_by', 'notes', 'stage', 'stage_at', 'site_name', 'addr_key',
-              'customer', 'contact', 'value', 'updated_at'],
-    widths: [130, 70, 90, 90, 240, 130, 200, 260, 300, 150, 200, 220, 180, 150, 220, 100, 180, 220, 90, 150], rows: [],
+              'customer', 'contact', 'value', 'updated_at', 'payment_plan'],
+    widths: [130, 70, 90, 90, 240, 130, 200, 260, 300, 150, 200, 220, 180, 150, 220, 100, 180, 220, 90, 150, 300], rows: [],
   },
   'Project Stages': {
     headers: ['type_id', 'order', 'stage', 'segments', 'follow_up_days', 'reminder', 'notes'],
@@ -190,8 +191,8 @@ const SEED = {
     ],
   },
   'Project Events': {
-    headers: ['project_id', 'at', 'stage', 'by', 'note', 'mail_id'],
-    widths: [130, 150, 220, 200, 460, 160], rows: [],
+    headers: ['project_id', 'at', 'stage', 'by', 'note', 'mail_id', 'event_id'],
+    widths: [130, 150, 220, 200, 460, 160, 110], rows: [],
   },
   'Orders': {
     headers: ['order_id', 'created_at', 'created_by', 'title', 'supplier', 'site_id', 'site_name', 'addr_key', 'project_id', 'stage',
@@ -200,8 +201,8 @@ const SEED = {
     note: 'Material orders. stage follows Settings ORDER_STAGES. Every step is also written to Order Events with who/when.', rows: [],
   },
   'Order Events': {
-    headers: ['order_id', 'at', 'stage', 'by', 'note', 'amount', 'date_value', 'mail_id'],
-    widths: [130, 150, 180, 200, 420, 100, 110, 160], rows: [],
+    headers: ['order_id', 'at', 'stage', 'by', 'note', 'amount', 'date_value', 'mail_id', 'event_id'],
+    widths: [130, 150, 180, 200, 420, 100, 110, 160, 110], rows: [],
   },
   'Part Prices': {
     headers: ['price_id', 'date', 'supplier', 'part', 'part_no', 'qty', 'unit', 'unit_price', 'total', 'currency', 'order_id',
@@ -369,7 +370,7 @@ const BACKUP_NAME_PREFIX = 'Krysnor OA Master backup ';
 const TEXT_COLUMNS = ['report_id', 'project_id', 'site_id', 'unit_id', 'arrived', 'left', 'contact_phone', 'phone', 'task_id', 'ref_id',
                       'installation_no', 'scheduled_week', 'contract_expiry',
                       'client_id', 'amends_report_id', 'folder_id', 'file_id', 'order_id', 'price_id', 'part_no', 'mail_id',
-                      'thread_id', 'quote_ref', 'key', 'month', 'ready_date', 'date', 'date_value', 'due_months', 'due_months_override', 'done_months'];
+                      'thread_id', 'quote_ref', 'key', 'month', 'ready_date', 'date', 'date_value', 'due_months', 'due_months_override', 'done_months', 'event_id', 'payment_plan'];
 
 // ───────────────────────────── Setup ─────────────────────────────
 
@@ -383,6 +384,7 @@ function setup() {
   installSyncTrigger_();
   installNotificationTrigger_();
   fillMailboxKeys_();
+  fillEventIds_();
   protectAllTabs_(ss);
   audit_(Session.getEffectiveUser().getEmail(), 'setup', ss.getName(),
          'Tabs checked; folders ensured: ' + folders.length + '; weekly backup trigger installed');
@@ -712,6 +714,7 @@ function doPost(e) {
 
 /** Appends one record, matching object keys to the header row. Returns the stored object. */
 function appendRecord_(sheetName, obj) {
+  if ((sheetName === 'Order Events' || sheetName === 'Project Events') && !obj.event_id) obj.event_id = newEventId_();
   const sh = SpreadsheetApp.getActive().getSheetByName(sheetName);
   const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
   sh.appendRow(headers.map(function (h) { return Object.prototype.hasOwnProperty.call(obj, h) ? obj[h] : ''; }));
@@ -1015,6 +1018,12 @@ const ACTIONS = {
   },
   projectStep: { permission: 'project.edit', run: function (user, p) { return projectStep_(user, p); } },
   linkMail: { permission: 'mail.view', run: function (user, p) { return linkMail_(user, p); } },
+  invoices: { permission: 'view.all', run: function (user) { return invoicesFor_(user); } },
+  editTime: {
+    // Only the admin (Kaixin) can correct a recorded time. Every change is written to the Audit Log with the old value.
+    permission: 'view.all',
+    run: function (user, p) { return editTime_(user, p); },
+  },
   deleteReport: {
     permission: 'report.delete',
     run: function (user, p) { return deleteReport_(user, p); },
@@ -2287,9 +2296,11 @@ function saveProject_(user, p) {
                      customer: clean_(p.customer, 200), contact: clean_(p.contact, 300), value: money_(p.value),
                      notes: clean_(p.notes, 3000), updated_at: new Date() };
     fields.addr_key = addrKey_(fields.site_name);
+    if (p.payment_plan !== undefined) fields.payment_plan = checkPlan_(p.payment_plan, p.type_id, p.segment_id);
     if (p.project_id) {
       const pr = updateRecord_('Projects', 'project_id', p.project_id, fields);
-      audit_(user.email, 'project.update', p.project_id, title);
+      ensureProjectInvoices_(pr);
+      audit_(user.email, 'project.update', p.project_id, title + (fields.payment_plan ? ' · plan ' + fields.payment_plan : ''));
       return { project: pr };
     }
     const type = readTable_('Project Types').filter(function (t) { return t.type_id === p.type_id; })[0];
@@ -2327,6 +2338,7 @@ function projectStep_(user, p) {
     appendRecord_('Project Events', { project_id: pr.project_id, at: new Date(), stage: stage || '', by: user.email, note: clean_(p.note, 2000), mail_id: clean_(p.mail_id, 100) });
     if (p.mail_id) linkMailRow_(p.mail_id, 'project', pr.project_id);
     if (fields.stage) closeTasks_(function (t) { return /^PRJ/.test(String(t.key)) && String(t.key).split(':')[1] === pr.project_id; }, user.email, 'Moved to ' + fields.stage);
+    if (fields.stage) ensureProjectInvoices_(Object.assign({}, pr, fields));
     audit_(user.email, 'project.step', pr.project_id, (stage || 'note') + (p.note ? ' · ' + p.note : ''));
     return { project: Object.assign(pr, fields) };
   });
@@ -2334,6 +2346,7 @@ function projectStep_(user, p) {
 
 /** Daily: "quote sent 7 days ago, follow up" and any other stage with follow_up_days. */
 function ensureProjectTasks_() {
+  readTable_('Projects').forEach(function (pr) { try { ensureProjectInvoices_(pr); } catch (e) { Logger.log(pr.project_id + ': ' + e.message); } });
   const roles = getSettings_().PROJECT_REMINDER_ROLES || 'office';
   const now = new Date();
   const tasks = [];
@@ -2471,4 +2484,126 @@ function workData_(user) {
   }
   out.syncedAt = new Date().toISOString();
   return out;
+}
+
+// ═════════════════════════════ Invoices: what was sent, what was not · admin time corrections ═════════════════════════════
+
+function newEventId_() { return 'E' + Utilities.getUuid().replace(/-/g, '').slice(0, 10); }
+function fillEventIds_() {
+  ['Order Events', 'Project Events'].forEach(function (name) {
+    const sh = SpreadsheetApp.getActive().getSheetByName(name);
+    if (!sh) return;
+    const head = headersOf_(name);
+    readTable_(name).forEach(function (r, i) { if (!String(r.event_id || '').trim()) writeRowFields_(sh, head, i + 2, { event_id: newEventId_() }); });
+  });
+}
+
+/** "50@Quote accepted;50@Installed" → [{pct, stage}], checked against the project's steps. */
+function parsePlan_(text) {
+  return String(text || '').split(';').map(function (x) { return x.trim(); }).filter(String).map(function (x) {
+    const m = /^(\d+(?:\.\d+)?)\s*@\s*(.+)$/.exec(x);
+    if (!m) throw new Error('Payment plan part "' + x + '" should look like 50@Quote accepted');
+    return { pct: Number(m[1]), stage: m[2].trim() };
+  });
+}
+function checkPlan_(text, typeId, segmentId) {
+  const plan = parsePlan_(text);
+  if (!plan.length) return '';
+  const total = plan.reduce(function (s, x) { return s + x.pct; }, 0);
+  if (Math.abs(total - 100) > 0.01) throw new Error('The invoice parts add up to ' + total + '%, not 100%.');
+  const names = projectStages_(typeId, segmentId).map(function (s) { return s.stage; });
+  plan.forEach(function (x) { if (names.length && names.indexOf(x.stage) < 0) throw new Error('"' + x.stage + '" is not a step of this project.'); });
+  return plan.map(function (x) { return x.pct + '@' + x.stage; }).join(';');
+}
+
+/** When a project reaches the step of an invoice part, that part becomes an invoice to send. Call while holding the lock. */
+function ensureProjectInvoices_(pr) {
+  if (!pr || !String(pr.payment_plan || '').trim() || String(pr.stage) === 'Lost / cancelled') return 0;
+  const names = projectStages_(pr.type_id, pr.segment_id).map(function (s) { return s.stage; });
+  const at = names.indexOf(pr.stage);
+  const plan = parsePlan_(pr.payment_plan);
+  const hst = Number(getSettings_().HST_RATE || 13);
+  const value = Number(pr.value) || 0;
+  const tasks = [];
+  plan.forEach(function (x, i) {
+    const need = names.indexOf(x.stage);
+    if (need < 0 || at < need) return;
+    const amt = Math.round(value * x.pct) / 100;
+    tasks.push({ key: 'PINV:' + pr.project_id + ':' + (i + 1), type: 'Project invoice', assign_roles: getSettings_().PROJECT_REMINDER_ROLES || 'office',
+                 ref_id: pr.project_id, site_id: pr.site_id || '', link: '#/projects/' + pr.project_id, amount: value ? amt : '',
+                 title: 'Invoice ' + (i + 1) + ' of ' + plan.length + ' (' + x.pct + '%) · ' + pr.title +
+                        (value ? ' · $' + amt.toFixed(2) + ' + HST ' + hst + '% = $' + (amt * (1 + hst / 100)).toFixed(2) : '') });
+  });
+  return ensureTasks_(tasks).length;
+}
+
+/** Every invoice to send — maintenance, after service reports, project parts — with sent / not sent, plus parts not due yet. */
+function invoicesFor_(user) {
+  const mine = function (t) { return user.isAdmin || String(t.assign_roles || '').split(',').some(function (x) { return user.roles.indexOf(x.trim()) >= 0; }); };
+  const iso = function (v) { return v instanceof Date ? v.toISOString() : v; };
+  const kind = function (t) {
+    if (/^MINV:/.test(String(t.key))) return 'Maintenance';
+    if (/^PINV:/.test(String(t.key))) return 'Project';
+    return 'Service report';
+  };
+  const items = readTable_('Tasks').filter(function (t) { return /invoice/i.test(String(t.type)) && mine(t); }).map(function (t) {
+    return { task_id: t.task_id, kind: kind(t), title: t.title, amount: t.amount, created_at: iso(t.created_at), status: t.status === 'done' ? 'sent' : 'not sent',
+             done_at: iso(t.done_at), done_by: t.done_by, note: t.note, link: t.link, ref_id: t.ref_id, site_id: t.site_id,
+             month: t.month || String(iso(t.created_at) || '').slice(0, 7) };
+  });
+  // Parts of a project's payment plan whose step has not been reached yet.
+  if (can_(user, 'project.view')) {
+    const have = {};
+    readTable_('Tasks').forEach(function (t) { if (t.key) have[t.key] = true; });
+    readTable_('Projects').forEach(function (pr) {
+      if (!String(pr.payment_plan || '').trim() || String(pr.stage) === 'Lost / cancelled') return;
+      let plan; try { plan = parsePlan_(pr.payment_plan); } catch (e) { return; }
+      plan.forEach(function (x, i) {
+        if (have['PINV:' + pr.project_id + ':' + (i + 1)]) return;
+        const amt = Number(pr.value) ? Math.round(Number(pr.value) * x.pct) / 100 : '';
+        items.push({ task_id: '', kind: 'Project', status: 'upcoming', amount: amt, ref_id: pr.project_id, site_id: pr.site_id || '',
+                     link: '#/projects/' + pr.project_id, created_at: '', month: '', due_step: x.stage,
+                     title: 'Invoice ' + (i + 1) + ' of ' + plan.length + ' (' + x.pct + '%) · ' + pr.title + ' — when "' + x.stage + '"' });
+      });
+    });
+  }
+  return { hst: Number(getSettings_().HST_RATE || 13), plans: getSettings_().PAYMENT_PLANS || '', items: items };
+}
+
+/** Which recorded times the admin may correct, by tab. */
+const TIME_FIELDS = {
+  'Service Reports': { id: 'report_id', fields: ['server_time'] },
+  'Tasks': { id: 'task_id', fields: ['created_at', 'done_at'] },
+  'Orders': { id: 'order_id', fields: ['created_at', 'stage_at', 'ready_date'] },
+  'Order Events': { id: 'event_id', fields: ['at'] },
+  'Projects': { id: 'project_id', fields: ['created_at', 'stage_at'] },
+  'Project Events': { id: 'event_id', fields: ['at'] },
+  'Sites': { id: 'site_id', fields: ['created_at', 'archived_at'] },
+};
+
+function editTime_(user, p) {
+  if (!user.isAdmin) throw new Error('Only the admin can change recorded times.');
+  const spec = TIME_FIELDS[p.table];
+  if (!spec || spec.fields.indexOf(p.field) < 0) throw new Error('That time cannot be changed here.');
+  const value = p.field === 'ready_date' ? clean_(p.value, 10) : new Date(p.value);
+  if (p.field === 'ready_date' ? !/^\d{4}-\d{2}-\d{2}$/.test(value) : isNaN(value.getTime())) throw new Error('Not a valid date / time.');
+  return withLock_(function () {
+    const row = readTable_(p.table).filter(function (r) { return String(r[spec.id]) === String(p.id); })[0];
+    if (!row) throw new Error(p.table + ' ' + p.id + ' does not exist.');
+    const old = row[p.field] instanceof Date ? row[p.field].toISOString() : String(row[p.field] || '');
+    const fields = {}; fields[p.field] = value;
+    updateRecord_(p.table, spec.id, p.id, fields);
+    // Moving the time of the step an order / project is in also moves its "in this step since" date (used by reminders).
+    if (p.table === 'Order Events' || p.table === 'Project Events') {
+      const parentTab = p.table === 'Order Events' ? 'Orders' : 'Projects', key = p.table === 'Order Events' ? 'order_id' : 'project_id';
+      const parent = readTable_(parentTab).filter(function (r) { return r[key] === row[key]; })[0];
+      if (parent && row.stage && row.stage === parent.stage) {
+        const latest = readTable_(p.table).filter(function (e) { return e[key] === row[key] && e.stage === row.stage; })
+          .sort(function (a, b) { return new Date(b.at) - new Date(a.at); })[0];
+        if (latest && latest.event_id === row.event_id) updateRecord_(parentTab, key, row[key], { stage_at: value });
+      }
+    }
+    audit_(user.email, 'time.edit', p.table + ' ' + p.id, p.field + ': ' + old + ' → ' + (value instanceof Date ? value.toISOString() : value));
+    return { table: p.table, id: p.id, field: p.field, old: old, value: value instanceof Date ? value.toISOString() : value };
+  });
 }

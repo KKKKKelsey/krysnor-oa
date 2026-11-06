@@ -25,7 +25,8 @@
     week: null,                          // Monday of the week shown in Schedule
     notes: LS.get('notes', null),
     work: null,                          // orders, prices, projects, mail (only the parts this role may see)
-    month: LS.get('month', null),        // this month's maintenance + invoice checklist        // latest 9:00 notification batch { batch_at, batches, items }
+    month: LS.get('month', null),
+    invoices: LS.get('invoices', null),  // every invoice to send: sent / not sent / coming up        // this month's maintenance + invoice checklist        // latest 9:00 notification batch { batch_at, batches, items }
   };
 
   // ───────── helpers ─────────
@@ -233,6 +234,7 @@
     $('#tab-month').hidden = !(state.month && state.month.items && state.month.items.length);
     $('#tab-orders').hidden = !can('order.view');
     $('#tab-prices').hidden = !can('order.view');
+    $('#tab-invoices').hidden = !(state.invoices && state.invoices.items && state.invoices.items.length) && !can('order.view');
     $('#tab-projects').hidden = !can('project.view');
     $('#tab-mail').hidden = !can('mail.view');
     $('#tab-tables').hidden = !(state.index && state.index.tableCount > 0);
@@ -416,7 +418,7 @@
       '<p><a href="#/reports">← All reports</a></p>' +
       '<h1><span class="ticket">' + esc(r.report_id) + '</span> ' + esc(r.site_name) + '</h1>' +
       (r.amends_report_id ? '<p class="muted">Correction to <a href="#/reports/' + encodeURIComponent(r.amends_report_id) + '">' + esc(r.amends_report_id) + '</a></p>' : '') +
-      '<div class="stamp"><span>Received by server <strong>' + esc(fmtDate(r.server_time)) + '</strong> · cannot be changed</span>' +
+      '<div class="stamp"><span>Received by server <strong>' + esc(fmtDate(r.server_time)) + '</strong>' + (isAdmin() ? te('Service Reports', r.report_id, 'server_time', r.server_time) : ' · cannot be changed') + '</span>' +
         (r.device_time ? '<span class="muted">Written on phone ' + esc(fmtDate(r.device_time)) + '</span>' : '') + '</div>' +
       '<dl class="fields">' +
         row('Technician', r.tech_name) + row('Call type', r.call_type) +
@@ -1027,6 +1029,7 @@
     try { state.work = await api('work'); await DB.setKv('work', state.work); }
     catch (e) { if (!state.work) { try { state.work = (await DB.getKv('work')) || null; } catch (x) { state.work = null; } } }
     try { state.month = await api('monthChecklist', {}); LS.set('month', state.month); } catch (e) { /* keep the copy on this device */ }
+    await loadInvoices();
   }
   async function loadWorkFromDevice() {
     if (!state.work) { try { state.work = (await DB.getKv('work')) || null; } catch (e) { state.work = null; } }
@@ -1134,7 +1137,7 @@
         '<span><b>' + esc(i.address) + '</b>' +
         '<small>' + esc(i.frequency) + (i.due_months && i.frequency !== 'Monthly' ? ' · ' + esc(i.due_months) : '') +
           (isInv && i.amount !== '' ? '<br><span class="mono">' + moneyFmt(i.amount) + ' + HST = ' + moneyFmt(Number(i.amount) * (1 + hst / 100)) + '</span>' : '') +
-          (i.status === 'done' ? '<br>✓ ' + esc(i.done_by === 'Maintenance Record' ? 'visit in the maintenance record' : who(i.done_by) + ' ' + dShort(i.done_at)) : '') + '</small></span></label>' +
+          (i.status === 'done' ? '<br>✓ ' + esc(i.done_by === 'Maintenance Record' ? 'visit in the maintenance record' : who(i.done_by) + ' ' + dShort(i.done_at)) + te('Tasks', i.task_id, 'done_at', i.done_at) : '') + '</small></span></label>' +
         '<span class="check-links">' + (i.site_id ? '<a href="#/sites/' + encodeURIComponent(i.site_id) + '">History</a>' : '') +
           (isInv && i.contact_email ? '<a href="mailto:' + esc(i.contact_email) + '?subject=' + encodeURIComponent(subj) + '">Email ' + esc(i.contact_name || i.contact_email) + '</a>' : '') + '</span></li>';
     };
@@ -1238,7 +1241,7 @@
       '<div class="page-head"><h1>' + esc(o.title) + '</h1><span class="ticket">' + esc(o.order_id) + '</span></div>' +
       '<dl class="kv"><dt>Supplier</dt><dd>' + esc(o.supplier || '—') + '</dd><dt>Address</dt><dd>' + siteLink(o.site_id, o.site_name) + '</dd>' +
         (proj ? '<dt>Project</dt><dd><a href="#/projects/' + encodeURIComponent(proj.project_id) + '">' + esc(proj.project_id + ' · ' + proj.title) + '</a></dd>' : '') +
-        '<dt>Opened</dt><dd>' + esc(dShort(o.created_at)) + ' by ' + esc(who(o.created_by)) + '</dd>' + (o.notes ? '<dt>Notes</dt><dd>' + esc(o.notes) + '</dd>' : '') + '</dl>' +
+        '<dt>Opened</dt><dd>' + esc(dShort(o.created_at)) + ' by ' + esc(who(o.created_by)) + te('Orders', o.order_id, 'created_at', o.created_at) + '</dd>' + (o.notes ? '<dt>Notes</dt><dd>' + esc(o.notes) + '</dd>' : '') + '</dl>' +
       flowHtml(stages, o.stage, info) +
       (can('order.edit') && o.stage !== stages[stages.length - 1] && o.stage !== 'Cancelled' ? '<h2>Next step</h2><form class="stack step-form" id="os" novalidate>' +
         '<div class="row2"><label class="field"><span>Step</span><select id="os-stage">' + stages.concat(['Cancelled']).map((s) => '<option' + (s === next ? ' selected' : '') + '>' + esc(s) + '</option>').join('') + '</select></label>' +
@@ -1262,7 +1265,7 @@
         const m = e.mail_id && mailById[e.mail_id];
         return '<li><span class="muted">' + esc(fmtDate(e.at)) + '</span> ' + (e.stage ? '<b>' + esc(e.stage) + '</b> ' : '') + esc(e.note || '') +
           (e.amount !== '' && e.amount !== undefined ? ' <span class="mono">' + moneyFmt(e.amount) + '</span>' : '') + (e.date_value ? ' · ' + esc(dShort(e.date_value)) : '') +
-          ' <span class="muted">· ' + esc(who(e.by)) + '</span>' + (m ? ' · <a href="' + esc(m.link) + '" target="_blank" rel="noopener">email</a>' : '') + '</li>';
+          ' <span class="muted">· ' + esc(who(e.by)) + '</span>' + te('Order Events', e.event_id, 'at', e.at) + (m ? ' · <a href="' + esc(m.link) + '" target="_blank" rel="noopener">email</a>' : '') + '</li>';
       }).join('') + '</ol>' +
       (mails.length ? '<h2>Emails · ' + mails.length + '</h2><div class="list">' + mails.map(mailRow).join('') + '</div>' : '');
     bindMailCards(view());
@@ -1397,6 +1400,7 @@
       '<dl class="kv"><dt>Type</dt><dd>' + esc(typeName(p.type_id).name) + ' · ' + esc(p.segment_id) + '</dd><dt>Address</dt><dd>' + siteLink(p.site_id, p.site_name) + '</dd>' +
         (p.customer ? '<dt>Customer</dt><dd>' + esc(p.customer) + '</dd>' : '') + (p.contact ? '<dt>Contact</dt><dd>' + esc(p.contact) + '</dd>' : '') +
         (p.value ? '<dt>Value</dt><dd class="mono">' + moneyFmt(p.value) + '</dd>' : '') +
+        '<dt>Opened</dt><dd>' + esc(dShort(p.created_at)) + te('Projects', p.project_id, 'created_at', p.created_at) + '</dd>' +
         (p.folder_url ? '<dt>Files</dt><dd><a href="' + esc(p.folder_url) + '" target="_blank" rel="noopener">Drive folder</a></dd>' : '') + '</dl>' +
       flowHtml(names, p.stage, info) +
       (cur && cur.notes ? '<p class="muted">Now: ' + esc(cur.notes) + '</p>' : '') +
@@ -1405,12 +1409,14 @@
         '<label class="field"><span>Note</span><input id="ps-note" type="text" placeholder="e.g. quote $38,500 sent, Chris approved"></label></div>' +
         '<p class="muted" id="ps-err" role="alert"></p><div class="actions"><button class="btn primary" type="submit">Save step</button><button class="btn ghost" type="button" id="ps-noteonly">Add note only</button>' +
         (can('order.edit') ? '<a class="btn ghost" href="#/orders/new?project=' + encodeURIComponent(id) + (p.site_id ? '&site=' + encodeURIComponent(p.site_id) : '') + '">Order materials</a>' : '') + '</div></form>' : '') +
+      planHtml(p) +
       (orders.length ? '<h2>Orders · ' + orders.length + '</h2><div class="list">' + orders.map(orderCard).join('') + '</div>' : '') +
       '<h2>Timeline</h2><ol class="timeline">' + ev.slice().reverse().map((e) => { const m = e.mail_id && mailById[e.mail_id];
-        return '<li><span class="muted">' + esc(fmtDate(e.at)) + '</span> ' + (e.stage ? '<b>' + esc(e.stage) + '</b> ' : '') + esc(e.note || '') + ' <span class="muted">· ' + esc(who(e.by)) + '</span>' +
+        return '<li><span class="muted">' + esc(fmtDate(e.at)) + '</span> ' + (e.stage ? '<b>' + esc(e.stage) + '</b> ' : '') + esc(e.note || '') + ' <span class="muted">· ' + esc(who(e.by)) + '</span>' + te('Project Events', e.event_id, 'at', e.at) +
           (m ? ' · <a href="' + esc(m.link) + '" target="_blank" rel="noopener">email</a>' : '') + '</li>'; }).join('') + '</ol>' +
       (mails.length ? '<h2>Emails · ' + mails.length + '</h2><div class="list">' + mails.map(mailRow).join('') + '</div>' : '');
     bindMailCards(view());
+    bindPlan(p);
     const f = $('#ps');
     if (f) {
       const send = async (noteOnly) => {
@@ -1461,6 +1467,149 @@
       (can('order.edit') ? '<div class="actions" style="margin-top:12px"><a class="btn ghost" href="#/orders/new?site=' + encodeURIComponent(s.site_id) + '">New order for this address</a></div>' : '');
   }
 
+  // ═════════ Invoices: what was sent, what was not ═════════
+  const isAdmin = () => !!(state.me && state.me.user && state.me.user.isAdmin);
+  /** Admin-only pencil next to a recorded time. */
+  function te(table, id, field, value) {
+    if (!isAdmin() || !id) return '';
+    return '<button type="button" class="tedit" title="Change this time (admin)" aria-label="Change this time" data-te="' +
+      esc([table, id, field, value || ''].join('|')) + '">✎</button>';
+  }
+  function localInput(v, dateOnly) {
+    if (!v) return '';
+    const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? v + 'T12:00:00' : v);
+    if (isNaN(d)) return '';
+    const p = (n) => String(n).padStart(2, '0');
+    const day = d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+    return dateOnly ? day : day + 'T' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+  function openTimeEdit(spec) {
+    const [table, id, field, value] = spec.split('|');
+    const dateOnly = field === 'ready_date';
+    openDrawer('Change time',
+      '<p class="muted">' + esc(table) + ' · ' + esc(id) + ' · ' + esc(field) + '</p>' +
+      '<p>Now: <strong>' + esc(value ? (dateOnly ? dShort(value) : fmtDate(value)) : '—') + '</strong></p>' +
+      '<label class="field"><span>New ' + (dateOnly ? 'date' : 'date and time') + '</span><input id="te-v" type="' + (dateOnly ? 'date' : 'datetime-local') + '" value="' + esc(localInput(value, dateOnly)) + '"></label>' +
+      '<p class="muted">Only you (admin) can do this. The old time is kept in the Audit Log.</p>' +
+      '<p class="muted" id="te-err" role="alert"></p><div class="actions"><button class="btn primary" type="button" id="te-save">Save</button></div>');
+    $('#te-save').addEventListener('click', async () => {
+      const v = $('#te-v').value; const err = $('#te-err'); err.textContent = '';
+      if (!v) { err.textContent = 'Pick a date.'; return; }
+      try {
+        await api('editTime', { table, id, field, value: dateOnly ? v : new Date(v).toISOString() });
+        $('#drawer').hidden = true; toast('Time changed');
+        await refreshData(); route();
+      } catch (e) { err.textContent = e.message; }
+    });
+  }
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('.tedit'); if (!b) return;
+    e.preventDefault(); e.stopPropagation(); openTimeEdit(b.dataset.te);
+  }, true);
+
+  async function loadInvoices() {
+    try { state.invoices = await api('invoices', {}); LS.set('invoices', state.invoices); } catch (e) { if (!state.invoices) state.invoices = LS.get('invoices', null); }
+  }
+  const INV_KINDS = ['Maintenance', 'Service report', 'Project'];
+  function renderInvoices() {
+    const d = state.invoices;
+    if (!d) { view().innerHTML = '<div class="empty">Connect once to download the invoice list.</div>'; return; }
+    const st = state.invSt || 'not sent', kind = state.invKind || '', q = (state.invQ || '').toLowerCase();
+    const hst = Number(d.hst || 13);
+    const all = d.items;
+    const list = all.filter((i) => (st === 'all' || i.status === st) && (!kind || i.kind === kind) &&
+      (!q || [i.title, i.note, i.ref_id].join(' ').toLowerCase().indexOf(q) >= 0))
+      .sort((a, b) => st === 'sent' ? String(b.done_at).localeCompare(String(a.done_at)) : String(a.created_at || '9').localeCompare(String(b.created_at || '9')));
+    const sum = (l) => l.reduce((s, i) => s + (Number(i.amount) || 0), 0);
+    const notSent = all.filter((i) => i.status === 'not sent'), sentMonth = all.filter((i) => i.status === 'sent' && String(i.done_at).slice(0, 7) === new Date().toISOString().slice(0, 7));
+    const tile = (label, l, extra) => '<div class="tile"><span>' + label + '</span><b>' + l.length + '</b><small class="mono">' + (sum(l) ? moneyFmt(sum(l)) + ' + HST' : '&nbsp;') + '</small>' + (extra || '') + '</div>';
+    view().innerHTML = '<div class="page-head"><h1>Invoices</h1></div>' +
+      '<div class="tiles">' + tile('Not sent yet', notSent) + tile('Sent this month', sentMonth) + tile('Coming up (projects)', all.filter((i) => i.status === 'upcoming')) + '</div>' +
+      '<div class="toolbar"><input id="iv-q" type="search" placeholder="Address, report, invoice #…" value="' + esc(state.invQ || '') + '" aria-label="Search invoices">' +
+      '<div class="seg" role="group" aria-label="Status">' + [['not sent', 'Not sent'], ['sent', 'Sent'], ['upcoming', 'Coming up'], ['all', 'All']].map((x) =>
+        '<button type="button" data-ist="' + x[0] + '" class="' + (st === x[0] ? 'on' : '') + '">' + x[1] + ' <small>' + (x[0] === 'all' ? all.length : all.filter((i) => i.status === x[0]).length) + '</small></button>').join('') + '</div></div>' +
+      '<div class="chips-row">' + [''].concat(INV_KINDS).map((k) => '<button type="button" class="fchip' + (k === kind ? ' on' : '') + '" data-ik="' + esc(k) + '">' + esc(k || 'All kinds') + '</button>').join('') + '</div>' +
+      (list.length ? '<p class="muted mono">' + list.length + ' shown' + (sum(list) ? ' · ' + moneyFmt(sum(list)) + ' + HST ' + hst + '% = ' + moneyFmt(sum(list) * (1 + hst / 100)) : '') + '</p>' +
+        '<ul class="checklist">' + list.map((i) => '<li class="check' + (i.status === 'sent' ? ' is-done' : '') + '">' +
+          '<label>' + (i.status === 'upcoming' ? '<span class="upcoming-dot" aria-hidden="true">◷</span>' : '<input type="checkbox" data-inv="' + esc(i.task_id) + '"' + (i.status === 'sent' ? ' checked' : '') + '>') +
+          '<span><b>' + esc(i.title) + '</b><small><span class="chip">' + esc(i.kind) + '</span> ' +
+            (i.status === 'sent' ? 'Sent ' + esc(dShort(i.done_at)) + (i.done_by ? ' by ' + esc(who(i.done_by)) : '') + te('Tasks', i.task_id, 'done_at', i.done_at) + (i.note ? ' · ' + esc(i.note) : '')
+              : i.status === 'upcoming' ? 'Billed when the project reaches "' + esc(i.due_step) + '"'
+              : 'Waiting since ' + esc(dShort(i.created_at)) + ' (' + daysSince(i.created_at) + ' days)' + te('Tasks', i.task_id, 'created_at', i.created_at)) +
+          '</small></span></label>' +
+          '<span class="check-links">' + (i.link ? '<a href="' + esc(i.link) + '">Open</a>' : '') + (i.kind === 'Service report' && i.ref_id ? '<a href="#/reports/' + encodeURIComponent(i.ref_id) + '">' + esc(i.ref_id) + '</a>' : '') + '</span></li>').join('') + '</ul>'
+        : '<div class="empty">' + (st === 'not sent' ? 'Everything has been sent.' : 'Nothing here.') + '</div>');
+    view().querySelectorAll('[data-ist]').forEach((b) => b.addEventListener('click', () => { state.invSt = b.dataset.ist; renderInvoices(); }));
+    view().querySelectorAll('[data-ik]').forEach((b) => b.addEventListener('click', () => { state.invKind = b.dataset.ik; renderInvoices(); }));
+    const qi = $('#iv-q'); qi.addEventListener('input', () => { state.invQ = qi.value; const p = qi.selectionStart; renderInvoices(); const n = $('#iv-q'); n.focus(); n.setSelectionRange(p, p); });
+    view().querySelectorAll('[data-inv]').forEach((cb) => cb.addEventListener('change', () => {
+      const it = d.items.find((x) => x.task_id === cb.dataset.inv);
+      if (cb.checked) {
+        cb.checked = false;
+        openDrawer('Mark invoice as sent', '<p><strong>' + esc(it.title) + '</strong></p>' +
+          '<label class="field"><span>Invoice # (optional)</span><input id="iv-no" type="text" placeholder="e.g. INV-2041"></label>' +
+          '<p class="muted" id="iv-err" role="alert"></p><div class="actions"><button class="btn primary" type="button" id="iv-save">Mark as sent</button></div>');
+        $('#iv-save').addEventListener('click', async () => {
+          try {
+            await api('setTask', { task_id: it.task_id, note: $('#iv-no').value });
+            Object.assign(it, { status: 'sent', done_at: new Date().toISOString(), done_by: state.me.user.email, note: $('#iv-no').value });
+            LS.set('invoices', d); $('#drawer').hidden = true; toast('Marked as sent'); renderInvoices(); loadNotes();
+          } catch (e) { $('#iv-err').textContent = e.message; }
+        });
+      } else {
+        cb.disabled = true;
+        api('setTask', { task_id: it.task_id, done: false }).then(() => {
+          Object.assign(it, { status: 'not sent', done_at: '', done_by: '', note: '' }); LS.set('invoices', d); toast('Back to not sent'); renderInvoices();
+        }).catch((e) => { cb.checked = true; cb.disabled = false; toast(e.message); });
+      }
+    }));
+  }
+
+  /** Payment plan (how the project is invoiced: 50/50, 45/45/10 …) on the project page. */
+  function planHtml(p) {
+    const steps = projectSteps(p).map((s) => s.stage);
+    const parts = String(p.payment_plan || '').split(';').filter(Boolean).map((x) => { const m = /^([\d.]+)@(.+)$/.exec(x); return m ? { pct: Number(m[1]), stage: m[2] } : null; }).filter(Boolean);
+    const inv = ((state.invoices && state.invoices.items) || []).filter((i) => i.ref_id === p.project_id && i.kind === 'Project');
+    const presets = String((state.invoices && state.invoices.plans) || '50/50=50,50|45/45/10=45,45,10').split('|').map((x) => x.split('='));
+    const at = steps.indexOf(p.stage);
+    const row = (x, i) => {
+      const t = inv.find((v) => new RegExp('^Invoice ' + (i + 1) + ' of ').test(v.title));
+      const amt = Number(p.value) ? Number(p.value) * x.pct / 100 : 0;
+      const s = t ? t.status : (steps.indexOf(x.stage) <= at ? 'not sent' : 'upcoming');
+      return '<li class="check' + (s === 'sent' ? ' is-done' : '') + '"><span><b>' + (i + 1) + '. ' + x.pct + '%' + (amt ? ' · ' + moneyFmt(amt) : '') + '</b>' +
+        '<small>when "' + esc(x.stage) + '" · ' + (s === 'sent' ? '✓ sent ' + esc(dShort(t.done_at)) + (t.note ? ' · ' + esc(t.note) : '') : s === 'not sent' ? '<strong class="warn-text">not sent yet</strong>' : 'coming up') + '</small></span></li>';
+    };
+    return '<h2>Invoicing</h2>' + (parts.length ? '<ul class="checklist plan">' + parts.map(row).join('') + '</ul>' : '<p class="muted">No invoice split set yet.</p>') +
+      (can('project.edit') && p.status !== 'closed' ? '<details class="add-site"><summary class="btn">' + (parts.length ? 'Change split' : 'Set invoice split') + '</summary>' +
+        '<form class="stack" id="plf" novalidate><label class="field"><span>Project value (before HST)</span><input id="pl-value" type="text" inputmode="decimal" value="' + esc(p.value || '') + '"></label>' +
+        '<label class="field"><span>Split</span><select id="pl-preset">' + presets.map((x) => '<option value="' + esc(x[1]) + '">' + esc(x[0]) + '</option>').join('') + '<option value="">Custom</option></select></label>' +
+        '<div id="pl-parts"></div><div class="actions"><button class="btn ghost" type="button" id="pl-more">+ Part</button></div>' +
+        '<p class="muted" id="pl-err" role="alert"></p><div class="actions"><button class="btn primary" type="submit">Save split</button></div></form></details>' : '');
+  }
+  function bindPlan(p) {
+    const f = $('#plf'); if (!f) return;
+    const steps = projectSteps(p).map((s) => s.stage);
+    const defaults = (n) => n === 2 ? [steps[3], steps[6]] : [steps[3], steps[6], steps[steps.length - 1]];
+    const partRow = (pct, stage) => '<div class="pline plan-line"><input type="text" class="pp-pct" inputmode="decimal" value="' + esc(pct) + '" aria-label="Percent"><span>% when</span>' +
+      '<select class="pp-stage" aria-label="Step">' + steps.map((s) => '<option' + (s === stage ? ' selected' : '') + '>' + esc(s) + '</option>').join('') + '</select></div>';
+    const fill = (pcts) => { const st = defaults(pcts.length); $('#pl-parts').innerHTML = pcts.map((x, i) => partRow(x, st[i] || steps[steps.length - 1])).join(''); };
+    const cur = String(p.payment_plan || '').split(';').filter(Boolean);
+    if (cur.length) $('#pl-parts').innerHTML = cur.map((x) => { const m = /^([\d.]+)@(.+)$/.exec(x); return partRow(m[1], m[2]); }).join('');
+    else fill($('#pl-preset').value.split(','));
+    if (cur.length) $('#pl-preset').value = '';
+    $('#pl-preset').addEventListener('change', (e) => { if (e.target.value) fill(e.target.value.split(',')); });
+    $('#pl-more').addEventListener('click', () => $('#pl-parts').insertAdjacentHTML('beforeend', partRow('', steps[steps.length - 1])));
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault(); const err = $('#pl-err'); err.textContent = '';
+      const plan = Array.from(f.querySelectorAll('.plan-line')).filter((l) => l.querySelector('.pp-pct').value.trim())
+        .map((l) => l.querySelector('.pp-pct').value.trim() + '@' + l.querySelector('.pp-stage').value).join(';');
+      try {
+        await api('saveProject', Object.assign({}, p, { value: $('#pl-value').value, payment_plan: plan }));
+        await loadWork(); toast('Invoice split saved'); renderProject(p.project_id);
+      } catch (ex) { err.textContent = ex.message; }
+    });
+  }
+
   // ───────── router ─────────
   function route() {
     state.touched = false;
@@ -1483,6 +1632,7 @@
     else if (tab === 'orders' && parts[1]) renderOrder(decodeURIComponent(parts[1]));
     else if (tab === 'orders') renderOrders();
     else if (tab === 'prices') renderPrices();
+    else if (tab === 'invoices') renderInvoices();
     else if (tab === 'projects' && parts[1] === 'new') renderProjectNew(new URLSearchParams(query || ''));
     else if (tab === 'projects' && parts[1]) renderProject(decodeURIComponent(parts[1]));
     else if (tab === 'projects') renderProjects();
