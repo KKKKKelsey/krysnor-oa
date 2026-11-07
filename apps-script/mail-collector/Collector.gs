@@ -25,7 +25,7 @@
  */
 
 const OA_URL = 'https://script.google.com/macros/s/AKfycbxL29V03kLn5WMkSO7eaJQHgBUUkCJjPHeXJvRCaTTnZgHlWKVli-zyRPl9Y-KqL3Fg/exec';
-const MAILBOX = Session.getActiveUser().getEmail().toLowerCase();   // the account this is installed in
+const MAILBOX = Gmail.Users.getProfile('me').emailAddress.toLowerCase();   // the account this is installed in (needs only gmail.readonly)
 const MAIL_KEY = 'PASTE_THE_KEY_FROM_KAIXIN_HERE';
 const EXCERPT_CHARS = 1500;      // how much of each message the OA keeps
 const MAX_PER_RUN = 150;
