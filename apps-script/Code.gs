@@ -64,32 +64,33 @@ const SEED = {
       ['manager', 'Manager / Approver', 'Approves quotes and orders. (Chris)', true],
       ['technician', 'Technician', 'Writes service reports, uploads site photos. (Duke)', true],
       ['office', 'Office', 'Screens bids, quotes, orders, maintenance contracts. (Kyle)', true],
+      ['sales', 'Sales', 'Screens new leads, sends quotes and follows up from the sales mailbox. Give it to whoever does sales (Kyle for now).', true],
       ['viewer', 'Viewer', 'Read-only access to everything.', true],
     ],
   },
   'Permissions': {
-    headers: ['permission', 'description', 'admin', 'manager', 'technician', 'office', 'viewer'],
-    widths: [150, 340, 80, 80, 90, 80, 80],
+    headers: ['permission', 'description', 'admin', 'manager', 'technician', 'office', 'viewer', 'sales'],
+    widths: [150, 340, 80, 80, 90, 80, 80, 80],
     note: 'One column per role_id (header must match Roles.role_id exactly). To add a role, add a column. ' +
           'The ADMIN_EMAIL in Settings always has every permission regardless of this table.',
     rows: [
-      ['view.all', 'See projects, calendar, reports and files', true, true, true, true, true],
-      ['report.create', 'Write a new service report', true, true, true, false, false],
-      ['report.amend_own', "Add a correction to one's own report", true, true, true, false, false],
-      ['report.delete', 'Delete any report (kept in the sheet with who/when/why)', true, true, false, false, false],
-      ['file.upload', 'Upload files/photos to a project folder', true, true, true, true, false],
-      ['site.create', 'Add a customer site or elevator unit', true, true, false, true, false],
-      ['site.delete', 'Remove a site from the Sites list (kept in the sheet as archived)', true, true, false, true, false],
-      ['project.create', 'Open a new project (creates its Drive folders)', true, true, false, true, false],
-      ['quote.submit', 'Submit a quote for approval', true, false, false, true, false],
-      ['quote.approve', 'Approve or send back a quote', true, true, false, false, false],
-      ['order.submit', 'Submit a material order for approval', true, false, false, true, false],
-      ['order.approve', 'Approve or send back a material order', true, true, false, false, false],
-      ['order.view', 'See material orders, supplier quotes and part prices', true, true, false, true, false],
-      ['order.edit', 'Open orders, move them through the steps, record part prices and suppliers', true, true, false, true, false],
-      ['project.view', 'See installation / repair projects and their steps', true, true, false, true, false],
-      ['project.edit', 'Move projects through their steps and edit them', true, true, false, true, false],
-      ['mail.view', 'See mail records collected from connected mailboxes (Kyle has agreed to his)', true, false, false, true, false],
+      ['view.all', 'See projects, calendar, reports and files', true, true, true, true, true, true],
+      ['report.create', 'Write a new service report', true, true, true, false, false, false],
+      ['report.amend_own', "Add a correction to one's own report", true, true, true, false, false, false],
+      ['report.delete', 'Delete any report (kept in the sheet with who/when/why)', true, true, false, false, false, false],
+      ['file.upload', 'Upload files/photos to a project folder', true, true, true, true, false, true],
+      ['site.create', 'Add a customer site or elevator unit', true, true, false, true, false, true],
+      ['site.delete', 'Remove a site from the Sites list (kept in the sheet as archived)', true, true, false, true, false, false],
+      ['project.create', 'Open a new project (creates its Drive folders)', true, true, false, true, false, true],
+      ['quote.submit', 'Submit a quote for approval', true, false, false, true, false, true],
+      ['quote.approve', 'Approve or send back a quote', true, true, false, false, false, false],
+      ['order.submit', 'Submit a material order for approval', true, false, false, true, false, false],
+      ['order.approve', 'Approve or send back a material order', true, true, false, false, false, false],
+      ['order.view', 'See material orders, supplier quotes and part prices', true, true, false, true, false, false],
+      ['order.edit', 'Open orders, move them through the steps, record part prices and suppliers', true, true, false, true, false, false],
+      ['project.view', 'See installation / repair projects and their steps', true, true, true, true, false, true],
+      ['project.edit', 'Move projects through their steps and edit them', true, true, false, true, false, true],
+      ['mail.view', 'See mail records collected from connected mailboxes (Kyle has agreed to his)', true, false, false, true, false, true],
     ],
   },
   'Users': {
@@ -165,38 +166,46 @@ const SEED = {
     widths: [130, 70, 90, 90, 240, 130, 200, 260, 300, 150, 200, 220, 180, 150, 220, 100, 180, 220, 90, 150, 300], rows: [],
   },
   'Project Stages': {
-    headers: ['type_id', 'order', 'stage', 'segments', 'follow_up_days', 'reminder', 'notes', 'assign_roles', 'form'],
-    widths: [80, 60, 260, 90, 110, 260, 300, 120, 80],
-    note: 'Steps of each project type, in order. segments: ALL, COM or RES. follow_up_days: remind if a project sits in this ' +
-          'step longer than this (0 = never). assign_roles: who gets a checkbox for this step (ticking it moves the project on). ' +
-          'form = scope: Chris writes what to do and which materials before the quote goes to Kyle. The last step closes the project.',
+    headers: ['type_id', 'order', 'stage', 'segments', 'follow_up_days', 'reminder', 'notes', 'assign_roles', 'form', 'next'],
+    widths: [80, 60, 260, 90, 110, 280, 320, 130, 80, 420],
+    note: 'Steps of each project type, in order (from the flowchart). segments: ALL, COM or RES. assign_roles: who takes care of ' +
+          'this step (sales, manager = Chris, office = Kyle, technician); they get a checkbox and ticking it moves the project on. ' +
+          'follow_up_days: remind if a project stays in this step longer. form = scope: Chris writes the work and materials. ' +
+          'next: choices instead of "next in order", written  choice→step | choice→step . Edit freely; the OA follows this tab.',
     rows: [
-      ['INS', 1, 'Lead / screening', 'ALL', 0, '', 'Bid or enquiry received; decide whether to go for it', 'office', ''],
-      ['INS', 2, 'Site assessment', 'ALL', 0, '', 'Visit, measure, photos', '', ''],
-      ['INS', 3, 'Chris confirms scope & materials', 'ALL', 2, 'Chris: confirm what to do and the materials', 'Chris writes the work and materials; then it goes to Kyle', 'manager', 'scope'],
-      ['INS', 4, 'Quote being prepared', 'ALL', 3, 'Prepare the quote', 'Kyle prepares the quote from Chris\'s scope', 'office', ''],
-      ['INS', 5, 'Quote sent', 'ALL', 7, 'No answer in 7 days: follow up the quote', 'Sent from the sales mailbox', '', ''],
-      ['INS', 6, 'Quote accepted', 'ALL', 0, '', 'Signed / deposit received', '', ''],
-      ['INS', 7, 'Materials ordered', 'ALL', 14, 'Check the material order', 'Link the orders to this project', 'office', ''],
-      ['INS', 8, 'Installation scheduled', 'ALL', 0, '', 'Workers and dates in the K.E Schedule', '', ''],
-      ['INS', 9, 'Installed', 'ALL', 0, '', '', '', ''],
-      ['INS', 10, 'TSSA inspection booked', 'COM', 14, 'Check the TSSA inspection date', 'Commercial only', 'office', ''],
-      ['INS', 11, 'TSSA report received', 'COM', 0, '', 'Save the report in 06_TSSA Reports & Issues', '', ''],
-      ['INS', 12, 'Maintenance contract sent', 'COM', 14, 'Follow up the maintenance contract', 'Custom contract per building', '', ''],
-      ['INS', 12, 'Maintenance package offered', 'RES', 14, 'Follow up the maintenance package', '6- or 12-month package', '', ''],
-      ['INS', 13, 'Kyle: all done', 'ALL', 0, 'Check everything is finished', 'Tick when the job is fully done', 'office', ''],
-      ['INS', 14, 'Closed', 'ALL', 0, '', '', '', ''],
-      ['REP', 1, 'Request received', 'ALL', 0, '', 'Repair / replacement request', 'office', ''],
-      ['REP', 2, 'Site visit / diagnosis', 'ALL', 0, '', '', '', ''],
-      ['REP', 3, 'Chris confirms scope & materials', 'ALL', 2, 'Chris: confirm what to do and the materials', 'Chris writes the work and materials; then it goes to Kyle', 'manager', 'scope'],
-      ['REP', 4, 'Quote being prepared', 'ALL', 3, 'Prepare the repair quote', 'Kyle prepares the quote from Chris\'s scope', 'office', ''],
-      ['REP', 5, 'Quote sent', 'ALL', 7, 'No answer in 7 days: follow up the repair quote', 'Sent from the sales mailbox', '', ''],
-      ['REP', 6, 'Approved by customer', 'ALL', 0, '', '', '', ''],
-      ['REP', 7, 'Parts ordered', 'ALL', 14, 'Check the parts order', '', 'office', ''],
-      ['REP', 8, 'Repair scheduled', 'ALL', 0, '', '', '', ''],
-      ['REP', 9, 'Repair done', 'ALL', 3, 'Send the invoice', '', '', ''],
-      ['REP', 10, 'Kyle: all done', 'ALL', 0, 'Check everything is finished', 'Tick when the job is fully done', 'office', ''],
-      ['REP', 11, 'Closed', 'ALL', 0, '', '', '', ''],
+      ['INS', 1, 'Lead screening', 'ALL', 0, 'Screen the lead', 'Sources: property manager lists, referrals, calls. Check need, budget and timing.', 'sales', '', ''],
+      ['INS', 2, 'Site assessment & scope', 'ALL', 3, 'Chris: assess the site and confirm the work and materials', 'Hoistway size, stops, capacity, power, commercial or residential.', 'manager', 'scope', ''],
+      ['INS', 3, 'Send quote', 'ALL', 2, 'Send the quote', 'Quote states validity and payment milestones. Sent from the sales mailbox.', 'sales', '', ''],
+      ['INS', 4, 'Waiting for reply', 'ALL', 7, 'No reply in 7 days: follow up', 'The OA checks the sales mailbox for a reply.', 'sales', '',
+       'Customer replied→Customer confirmed · deposit | No reply→Follow up customer | Lost→Lost / cancelled'],
+      ['INS', 5, 'Follow up customer', 'ALL', 0, 'Follow up the customer', 'Call or email, then wait 7 more days. After several tries with no reply, mark as lost and note why.', 'sales', '',
+       'Followed up, wait again→Waiting for reply | Customer replied→Customer confirmed · deposit | Lost→Lost / cancelled'],
+      ['INS', 6, 'Customer confirmed · deposit', 'ALL', 0, 'Contract signed and deposit received', 'Sign the contract, confirm the project type.', 'office', '', ''],
+      ['INS', 7, 'Order materials', 'ALL', 14, 'Order the materials', 'Record supplier and delivery date (Orders page).', 'office', '', ''],
+      ['INS', 8, 'Schedule workers', 'ALL', 0, 'Schedule the workers', '', 'office', '', ''],
+      ['INS', 9, 'Confirm install date with customer', 'ALL', 0, 'Confirm the installation date with the customer', '', 'office', '', ''],
+      ['INS', 10, 'Installation', 'ALL', 0, 'Installation done', '', 'technician', '', ''],
+      ['INS', 11, 'Apply for TSSA inspection', 'COM', 14, 'Apply for the TSSA inspection', 'Record application number and booked date.', 'office', '', ''],
+      ['INS', 12, 'TSSA inspection', 'COM', 0, 'Attend the TSSA inspection', 'Workers attend the inspection.', 'technician', '', ''],
+      ['INS', 13, 'TSSA report received', 'COM', 0, 'TSSA report received: passed?', 'Save the report in 06_TSSA Reports & Issues.', 'office', '',
+       'Passed→Send maintenance contract | Not passed→Deficiencies to fix'],
+      ['INS', 14, 'Deficiencies to fix', 'COM', 0, 'Write down what has to be fixed', 'List the deficiencies from the TSSA report.', 'technician', '', ''],
+      ['INS', 15, 'Schedule workers for fixes', 'COM', 0, 'Schedule workers for the fixes', '', 'office,manager', '', ''],
+      ['INS', 16, 'Fix deficiencies', 'COM', 0, 'Fixes done', 'Then apply for the TSSA inspection again.', 'technician', '', 'Fixed, apply again→Apply for TSSA inspection'],
+      ['INS', 17, 'Send maintenance contract', 'COM', 14, 'Send the custom maintenance contract', 'Custom to the equipment and usage.', 'office', '', ''],
+      ['INS', 17, 'Send maintenance packages', 'RES', 14, 'Send the maintenance package options', 'Residential: give the customer a few package options.', 'office', '', ''],
+      ['INS', 18, 'Maintenance customer', 'ALL', 0, '', 'Closed: now a maintenance customer.', '', '', ''],
+      ['REP', 1, 'Request received', 'ALL', 0, 'Look at the repair request', 'Repair / replacement request.', 'office', '', ''],
+      ['REP', 2, 'Site visit & scope', 'ALL', 3, 'Chris: confirm the work and materials', 'What has to be done and which parts.', 'manager', 'scope', ''],
+      ['REP', 3, 'Send quote', 'ALL', 2, 'Send the repair quote', 'Sent from the sales mailbox.', 'sales', '', ''],
+      ['REP', 4, 'Waiting for reply', 'ALL', 7, 'No reply in 7 days: follow up', '', 'sales', '',
+       'Customer approved→Parts ordered | No reply→Follow up customer | Lost→Lost / cancelled'],
+      ['REP', 5, 'Follow up customer', 'ALL', 0, 'Follow up the customer', '', 'sales', '',
+       'Followed up, wait again→Waiting for reply | Customer approved→Parts ordered | Lost→Lost / cancelled'],
+      ['REP', 6, 'Parts ordered', 'ALL', 14, 'Order the parts', '', 'office', '', ''],
+      ['REP', 7, 'Schedule workers', 'ALL', 0, 'Schedule the repair', '', 'office', '', ''],
+      ['REP', 8, 'Repair done', 'ALL', 0, 'Repair done', '', 'technician', '', ''],
+      ['REP', 9, 'Closed', 'ALL', 0, '', '', '', '', ''],
     ],
   },
   'Project Events': {
@@ -417,6 +426,8 @@ function setup() {
   installSyncTrigger_();
   installNotificationTrigger_();
   addMissingSeedRows_('Mailboxes', 'mailbox');
+  addMissingSeedRows_('Roles', 'role_id');
+  fillRoleColumn_('sales');
   migrateProjectStages_();
   fillMailboxKeys_();
   fillEventIds_();
@@ -1055,7 +1066,14 @@ const ACTIONS = {
       return saveProject_(user, p);
     },
   },
-  projectStep: { permission: 'project.edit', run: function (user, p) { return projectStep_(user, p); } },
+  projectStep: {
+    // project.edit may move a project to any step; the person a step is assigned to may finish that step (next step or one of its choices).
+    permission: 'view.all',
+    run: function (user, p) {
+      if (!can_(user, 'project.edit')) checkStepOwner_(user, p);
+      return projectStep_(user, p);
+    },
+  },
   confirmScope: {
     // Chris: what has to be done and which materials, before Kyle prepares the quote.
     permission: 'project.edit',
@@ -1970,6 +1988,7 @@ function completeTask_(user, p) {
     const sh = SpreadsheetApp.getActive().getSheetByName('Tasks');
     const head = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
     if (/^PSTEP:/.test(String(t.key)) && String(t.key).split(':')[3] === 'scope') throw new Error('Chris confirms this on the project page (work to do and materials).');
+    if (/^PSTEP:/.test(String(t.key)) && String(t.key).split(':')[3] === 'choice') throw new Error('This step has choices (e.g. passed / not passed): pick one on the project page.');
     writeRowFields_(sh, head, i + 2, { status: 'done', done_at: new Date(), done_by: user.email, note: clean_(p.note, 500) });
     audit_(user.email, 'task.done', t.task_id, t.title + (p.note ? ' · ' + p.note : ''));
     // Ticking a project step's checkbox moves the project to its next step.
@@ -2637,8 +2656,8 @@ function invoicesFor_(user) {
              done_at: iso(t.done_at), done_by: t.done_by, note: t.note, link: t.link, ref_id: t.ref_id, site_id: t.site_id,
              month: t.month || String(iso(t.created_at) || '').slice(0, 7) };
   });
-  // Parts of a project's payment plan whose step has not been reached yet.
-  if (can_(user, 'project.view')) {
+  // Parts of a project's payment plan whose step has not been reached yet (office, Chris and admin only).
+  if (can_(user, 'order.view')) {
     const have = {};
     readTable_('Tasks').forEach(function (t) { if (t.key) have[t.key] = true; });
     readTable_('Projects').forEach(function (pr) {
@@ -2730,27 +2749,64 @@ function addMissingSeedRows_(name, keyCol) {
 /** Version 2 of the project steps (Chris confirms scope & materials; Kyle's checkboxes). Runs once. */
 function migrateProjectStages_() {
   const props = PropertiesService.getScriptProperties();
-  if (props.getProperty('STAGES_VERSION') === '2') return;
+  if (props.getProperty('STAGES_VERSION') === '3') return;
   const sh = SpreadsheetApp.getActive().getSheetByName('Project Stages');
-  const rows = readTable_('Project Stages');
-  if (!rows.some(function (r) { return /chris confirms/i.test(String(r.stage)); })) {
+  const newNames = SEED['Project Stages'].rows.map(function (r) { return r[0] + '|' + r[2]; });
+  const stuck = readTable_('Projects').filter(function (p) { return String(p.status) !== 'closed' && p.stage && newNames.indexOf(p.type_id + '|' + p.stage) < 0; });
+  if (stuck.length) { Logger.log('Project steps not replaced: open projects use old steps (' + stuck.map(function (p) { return p.project_id; }).join(', ') + ')'); return; }
+  {
     const head = headersOf_('Project Stages');
     if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, head.length).clearContent();
     const def = SEED['Project Stages'];
     const out = def.rows.map(function (r) { return head.map(function (h) { const i = def.headers.indexOf(h); return i >= 0 ? r[i] : ''; }); });
     sh.getRange(2, 1, out.length, head.length).setValues(out);
   }
-  props.setProperty('STAGES_VERSION', '2');
+  props.setProperty('STAGES_VERSION', '3');
 }
 
 /** The checkbox for the step a project just entered (if that step has assign_roles). */
 function ensureStepTask_(pr) {
   const st = projectStages_(pr.type_id, pr.segment_id).filter(function (s) { return s.stage === pr.stage; })[0];
   if (!st || !String(st.assign_roles || '').trim()) return 0;
-  const form = String(st.form || '').trim();
+  let form = String(st.form || '').trim();
+  if (!form && stepChoices_(st).length) form = 'choice';
   return ensureTasks_([{ key: 'PSTEP:' + pr.project_id + ':' + pr.stage + ':' + (form || 'tick') + ':' + day_(new Date()), type: 'Project step',
     assign_roles: st.assign_roles, ref_id: pr.project_id, site_id: pr.site_id || '', link: '#/projects/' + pr.project_id,
     title: (st.reminder || pr.stage) + ': ' + pr.title + (pr.site_name ? ' · ' + pr.site_name : '') }]).length;
+}
+
+/** "Passed→Send maintenance contract | Not passed→Deficiencies to fix" → [{label, stage}] */
+function stepChoices_(st) {
+  return String((st && st.next) || '').split('|').map(function (x) { return x.trim(); }).filter(String).map(function (x) {
+    const m = x.split(/\s*(?:→|->)\s*/); return { label: m.length > 1 ? m[0] : m[0], stage: (m.length > 1 ? m[1] : m[0]).trim() };
+  });
+}
+
+/** Fills a role's column in Permissions from the defaults the first time that column appears. */
+function fillRoleColumn_(role) {
+  const sh = SpreadsheetApp.getActive().getSheetByName('Permissions');
+  const head = headersOf_('Permissions');
+  const rows = readTable_('Permissions');
+  if (head.indexOf(role) < 0 || rows.some(function (r) { return String(r[role]).trim() !== ''; })) return;
+  const def = SEED.Permissions, col = def.headers.indexOf(role);
+  rows.forEach(function (r, i) {
+    const seed = def.rows.filter(function (x) { return x[0] === r.permission; })[0];
+    const f = {}; f[role] = seed ? seed[col] : false;
+    writeRowFields_(sh, head, i + 2, f);
+  });
+}
+
+function checkStepOwner_(user, p) {
+  const pr = readTable_('Projects').filter(function (x) { return x.project_id === p.project_id; })[0];
+  if (!pr) throw new Error('Project ' + p.project_id + ' does not exist.');
+  const steps = projectStages_(pr.type_id, pr.segment_id);
+  const cur = steps.filter(function (s) { return s.stage === pr.stage; })[0];
+  const mine = cur && String(cur.assign_roles || '').split(',').some(function (r) { return user.roles.indexOf(r.trim()) >= 0; });
+  if (!mine) throw new Error('Only the person this step is assigned to can finish it.');
+  const names = steps.map(function (s) { return s.stage; });
+  const allowed = stepChoices_(cur).map(function (c) { return c.stage; });
+  if (!allowed.length) allowed.push(names[names.indexOf(pr.stage) + 1]);
+  if (p.stage && allowed.indexOf(p.stage) < 0) throw new Error('From "' + pr.stage + '" you can go to: ' + allowed.join(', ') + '.');
 }
 
 function advanceProjectFromTask_(user, t, note) {

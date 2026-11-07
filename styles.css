@@ -393,3 +393,4 @@ input[type=date] { width: 100%; padding: 9px 11px; border: 1px solid var(--line)
 .scope-box { margin: 14px 0; padding: 4px 14px 10px; border-left: 3px solid var(--navy); background: var(--panel); border-radius: 0 8px 8px 0; }
 .scope-box p { margin: 4px 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .scope-box small { text-transform: none; letter-spacing: 0; font-weight: 500; color: var(--ink-2); }
+.choice-row { flex-wrap: wrap; }

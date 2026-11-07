@@ -1625,7 +1625,14 @@
   function stepBoxHtml(p, cur) {
     if (!cur || p.status === 'closed' || !String(cur.assign_roles || '').trim()) return '';
     const mine = hasRole(cur.assign_roles);
-    const whoFor = String(cur.assign_roles).split(',').map((r) => ({ manager: 'Chris', office: 'Kyle', technician: 'the technician', admin: 'Kaixin' })[r.trim()] || r).join(' / ');
+    const whoFor = String(cur.assign_roles).split(',').map((r) => ({ manager: 'Chris', office: 'Kyle', technician: 'the technician', admin: 'Kaixin', sales: 'Sales' })[r.trim()] || r).join(' / ');
+    const choices = String(cur.next || '').split('|').map((x) => x.trim()).filter(Boolean).map((x) => { const m = x.split(/\s*(?:→|->)\s*/); return { label: m[0], stage: (m[1] || m[0]).trim() }; });
+    if (choices.length && String(cur.form) !== 'scope') {
+      if (!mine) return '<div class="step-box waiting">Now with ' + esc(whoFor) + ': ' + esc(cur.reminder || cur.stage) + '</div>';
+      return '<div class="step-box"><h2>' + esc(/\?\s*$/.test(cur.reminder || '') ? cur.reminder : cur.stage + ': what happened?') + '</h2><div class="actions choice-row">' +
+        choices.map((c) => '<button type="button" class="btn' + (/lost|not passed/i.test(c.label) ? ' ghost' : ' primary') + '" data-choice="' + esc(c.stage) + '">' + esc(c.label) + '</button>').join('') + '</div>' +
+        '<input type="text" id="step-note" placeholder="Note (optional)"></div>';
+    }
     if (String(cur.form) === 'scope') {
       if (!mine) return '<div class="step-box waiting">Waiting for ' + esc(whoFor) + ' to confirm the work and materials before the quote is prepared.</div>';
       return '<form class="stack step-box" id="scf" novalidate><h2>' + esc(cur.reminder || cur.stage) + '</h2>' +
@@ -1646,6 +1653,12 @@
             await loadWork(); loadNotes(); toast('Sent to Kyle'); renderProject(p.project_id); }
       catch (ex) { err.textContent = ex.message; }
     });
+    view().querySelectorAll('[data-choice]').forEach((b) => b.addEventListener('click', async () => {
+      view().querySelectorAll('[data-choice]').forEach((x) => { x.disabled = true; });
+      try { await api('projectStep', { project_id: p.project_id, stage: b.dataset.choice, note: '✓ ' + p.stage + ': ' + b.textContent + ($('#step-note').value ? ' · ' + $('#step-note').value : '') });
+            await loadWork(); loadNotes(); toast('Now: ' + b.dataset.choice); renderProject(p.project_id); }
+      catch (ex) { view().querySelectorAll('[data-choice]').forEach((x) => { x.disabled = false; }); toast(ex.message); }
+    }));
     const cb = $('#step-done');
     if (cb) cb.addEventListener('change', async () => {
       if (!cb.checked) return;
@@ -1661,7 +1674,7 @@
     const f = $('#plf'); if (!f) return;
     const steps = projectSteps(p).map((s) => s.stage);
     const pick = (re, fb) => steps.find((s) => re.test(s)) || fb;
-    const won = pick(/accepted|approved by customer/i, steps[1]), built = pick(/^installed$|repair done/i, steps[steps.length - 2]);
+    const won = pick(/confirmed|accepted|approved/i, steps[1]), built = pick(/^installation$|installed|repair done/i, steps[steps.length - 2]);
     const defaults = (n) => n === 2 ? [won, built] : [won, built, steps[steps.length - 1]];
     const partRow = (pct, stage) => '<div class="pline plan-line"><input type="text" class="pp-pct" inputmode="decimal" value="' + esc(pct) + '" aria-label="Percent"><span>% when</span>' +
       '<select class="pp-stage" aria-label="Step">' + steps.map((s) => '<option' + (s === stage ? ' selected' : '') + '>' + esc(s) + '</option>').join('') + '</select></div>';
