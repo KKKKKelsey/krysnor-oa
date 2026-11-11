@@ -60,7 +60,9 @@ function collect() {
   let added = 0;
   const seen = {};
   for (let i = 0; i < ids.length; i += 40) {
-    const batch = ids.slice(i, i + 40).map(readMessage_);
+    const batch = ids.slice(i, i + 40).map(function (id) {
+      try { return readMessage_(id); } catch (e) { Logger.log('Skipped ' + id + ': ' + e.message); return null; }
+    }).filter(Boolean);
     batch.forEach(function (m) { if (!seen[m.threadId]) { seen[m.threadId] = true; m.thread = threadSummary_(m.threadId); } });
     const res = post_({ action: 'ingestMail', messages: batch });
     added += res.added || 0;
@@ -109,12 +111,21 @@ function readMessage_(id) {
 function walk_(part, out) {
   if (!part) return;
   if (part.filename) out.files.push(part.filename);
-  else if (part.body && part.body.data) {
-    const text = Utilities.newBlob(Utilities.base64DecodeWebSafe(part.body.data)).getDataAsString('UTF-8');
+  else if (part.body && part.body.data && (part.mimeType === 'text/plain' || part.mimeType === 'text/html')) {
+    let text = '';
+    try { text = decodeBody_(part.body.data); } catch (e) { text = ''; }   // an odd part never stops the run
     if (part.mimeType === 'text/plain' && !out.text) out.text = text;
     else if (part.mimeType === 'text/html' && !out.html) out.html = text;
   }
   (part.parts || []).forEach(function (p) { walk_(p, out); });
+}
+
+/** The Gmail service in Apps Script gives the body as bytes; the raw API gives web-safe base64 text. Handle both. */
+function decodeBody_(data) {
+  if (typeof data !== 'string') return Utilities.newBlob(data).getDataAsString('UTF-8');
+  let s = data.replace(/-/g, '+').replace(/_/g, '/');
+  while (s.length % 4) s += '=';
+  return Utilities.newBlob(Utilities.base64Decode(s)).getDataAsString('UTF-8');
 }
 
 function post_(body) {
