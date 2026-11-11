@@ -274,6 +274,12 @@ const SEED = {
       ['Task', '\\b(urgent|asap|reminder|action required|deadline)\\b', 'any', '{urgent asap reminder "action required" deadline}', false, 'office', true, ''],
     ],
   },
+  'Mail Queue': {
+    headers: ['queued_at', 'mailbox', 'kind', 'payload'],
+    widths: [150, 200, 80, 600],
+    note: 'Mail the collectors just sent, waiting to be filed (usually for seconds; up to 10 minutes while the hourly sync runs). Rows disappear once processed.',
+    rows: [],
+  },
   'Mail Threads': {
     headers: ['thread_id', 'mailbox', 'subject', 'counterpart', 'categories', 'site_name', 'first_at', 'last_in_at', 'last_out_at',
               'waiting_on', 'updated_at', 'link'],
@@ -425,6 +431,7 @@ function setup() {
   installBackupTrigger_();
   installSyncTrigger_();
   installNotificationTrigger_();
+  installMailQueueTrigger_();
   addMissingSeedRows_('Mailboxes', 'mailbox');
   addMissingSeedRows_('Roles', 'role_id');
   fillRoleColumn_('sales');
@@ -1480,7 +1487,8 @@ function readXlsx_(blob) {
 
 /** Reads every active Data Source and rebuilds the search index. Runs every hour; you can also run it by hand. */
 function syncSources() {
-  const lock = LockService.getScriptLock();
+  // Only one sync at a time — but this does NOT block reports, mail or ticks while the company files are being read.
+  const lock = LockService.getDocumentLock() || LockService.getUserLock();
   if (!lock.tryLock(5000)) { Logger.log('A sync is already running.'); return; }
   const started = new Date();
   const items = [];
@@ -1544,6 +1552,10 @@ function syncSources() {
       const put = function (name, value) { const c = headers.indexOf(name); if (c >= 0) sheet.getRange(r, c + 1).setValue(value); };
       put('last_sync', started); put('last_result', count + ' items · ' + result);
     });
+    // The writes below take the shared write lock for a few seconds only.
+    const writeLock = LockService.getScriptLock();
+    writeLock.waitLock(120000);
+    try {
     // Fixed maintenance addresses → Sites / Units, and the Maintenance Log tab (both in Kaixin's sheet only).
     if (importRaw.length) {
       try {
@@ -1573,6 +1585,9 @@ function syncSources() {
     else folder.createFile(INDEX_FILE_NAME, json, MimeType.PLAIN_TEXT);
     PropertiesService.getScriptProperties().setProperty('INDEX_VERSION', index.version);
     CacheService.getScriptCache().remove('index');
+    } finally {
+      writeLock.releaseLock();
+    }
     Logger.log('Search index rebuilt: ' + items.length + ' items\n' + report.join('\n'));
     return report;
   } finally {
@@ -1895,6 +1910,7 @@ function refreshNotifications() {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
+    try { processMailQueueCore_(200); } catch (err) { Logger.log('Mail queue: ' + err.message); }
     try { ensureMonthTasks_(); ensureOrderTasks_(); ensureProjectTasks_(); ensureMailTasks_(); } catch (err) { Logger.log('Reminders: ' + err.message); }
     let now = new Date();
     const last = PropertiesService.getScriptProperties().getProperty('NOTIFY_BATCH');
@@ -2467,14 +2483,68 @@ function ingestMail_(body) {
     return { query: isTrue_(box.track_all_sent) ? '(in:sent OR ' + q + ')' : q, lookbackDays: Number(getSettings_().MAIL_LOOKBACK_DAYS || 3),
              watch: watchedThreads_(norm_(body.mailbox)) };
   }
-  if (body.action === 'threadStatus') {
-    return withLock_(function () {
-      (body.threads || []).slice(0, 300).forEach(function (th) { updateThread_(box, th, null); });
-      ensureMailTasks_();
-      return { threads: (body.threads || []).length };
-    });
-  }
-  return withLock_(function () {
+  // Put the mail in the queue right away (appendRow needs no lock), then try to process it now.
+  // If the sheet is busy (e.g. the hourly sync), the 10-minute job processes it — the collector never has to wait.
+  const q = SpreadsheetApp.getActive().getSheetByName('Mail Queue');
+  const mb = norm_(body.mailbox), now = new Date();
+  let queued = 0;
+  (body.messages || []).slice(0, 200).forEach(function (m) { q.appendRow([now, mb, 'message', JSON.stringify(m)]); queued++; });
+  (body.threads || []).slice(0, 300).forEach(function (t) { q.appendRow([now, mb, 'thread', JSON.stringify(t)]); queued++; });
+  const processed = processMailQueue_(8000);
+  return { added: queued, queued: queued, processed_now: processed };
+}
+
+/** Takes the write lock (waiting up to waitMs) and processes queued mail in small rounds. Returns rows processed. */
+function processMailQueue_(waitMs) {
+  const started = Date.now();
+  let total = 0, n = 0;
+  do {
+    const lock = LockService.getScriptLock();
+    if (!lock.tryLock(total ? 2000 : (waitMs || 20000))) break;
+    try { n = processMailQueueCore_(25); } finally { lock.releaseLock(); }
+    total += n;
+  } while (n > 0 && Date.now() - started < 20000);
+  return total;
+}
+/** Every 10 minutes (trigger): anything still in the queue. */
+function processMailQueue() {
+  const started = Date.now();
+  let n = 0;
+  do { n = processMailQueue_(30000); } while (n > 0 && Date.now() - started < 240000);
+}
+/** Call while holding the script lock. */
+function processMailQueueCore_(max) {
+  const sh = SpreadsheetApp.getActive().getSheetByName('Mail Queue');
+  if (!sh) return 0;
+  const last = sh.getLastRow();
+  if (last < 2) return 0;
+  const n = Math.min(last - 1, max || 25);
+  const rows = sh.getRange(2, 1, n, 4).getValues();
+  const boxes = {};
+  readTable_('Mailboxes').forEach(function (b) { boxes[norm_(b.mailbox)] = b; });
+  const byBox = {};
+  rows.forEach(function (r) {
+    let p; try { p = JSON.parse(r[3]); } catch (e) { Logger.log('Mail queue: unreadable row skipped'); return; }
+    const k = norm_(r[1]);
+    const g = byBox[k] || (byBox[k] = { messages: [], threads: [] });
+    (r[2] === 'thread' ? g.threads : g.messages).push(p);
+  });
+  Object.keys(byBox).forEach(function (k) { if (boxes[k] && isTrue_(boxes[k].active)) ingestCore_(boxes[k], byBox[k]); });
+  if (n >= sh.getMaxRows() - 1) sh.insertRowAfter(sh.getMaxRows());   // Sheets refuses to delete every row below the header
+  sh.deleteRows(2, n);   // new mail is only ever added below, so these are exactly the rows just read
+  return n;
+}
+
+function installMailQueueTrigger_() {
+  ScriptApp.getProjectTriggers()
+    .filter(function (t) { return t.getHandlerFunction() === 'processMailQueue'; })
+    .forEach(function (t) { ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger('processMailQueue').timeBased().everyMinutes(10).create();
+}
+
+/** Saves queued messages / conversation timings for one mailbox. Call while holding the script lock. */
+function ingestCore_(box, body) {
+  return (function () {
     const have = {};
     readTable_('Mail').forEach(function (m) { have[String(m.mail_id)] = true; });
     const rules = readTable_('Mail Rules').filter(function (r) { return isTrue_(r.active) && r.pattern; });
@@ -2503,13 +2573,13 @@ function ingestMail_(body) {
       const thread = clean_(msg.threadId, 100);
       const order = orders.filter(function (o) { return thread && String(o.mail_thread_ids || '').split(',').indexOf(thread) >= 0; })[0];
       const rec = {
-        mail_id: id, thread_id: thread, mailbox: norm_(body.mailbox), received_at: msg.date ? new Date(msg.date) : new Date(),
+        mail_id: id, thread_id: thread, mailbox: norm_(box.mailbox), received_at: msg.date ? new Date(msg.date) : new Date(),
         direction: msg.direction === 'out' ? 'out' : 'in', from: from, to: clean_(msg.to, 500), subject: subject,
         snippet: clean_(msg.snippet, 300), excerpt: excerpt, categories: cats.join(','), supplier: supplier ? supplier.name : '',
         site_id: site ? site.site_id : '', site_name: site ? site.name : '', addr_key: addrKey_(text),
         amounts: unique_((text.match(/\$\s?\d[\d,]*(\.\d{2})?/g) || []).map(function (a) { return a.replace(/\s/g, ''); })).slice(0, 6).join(' '),
         attachments: clean_((msg.attachments || []).join(', '), 500),
-        link: 'https://mail.google.com/mail/u/?authuser=' + encodeURIComponent(norm_(body.mailbox)) + '#all/' + thread,
+        link: 'https://mail.google.com/mail/u/?authuser=' + encodeURIComponent(norm_(box.mailbox)) + '#all/' + thread,
         ingested_at: new Date(), linked_type: order ? 'order' : '', linked_id: order ? order.order_id : '', status: 'new',
       };
       appendRecord_('Mail', rec);
@@ -2528,10 +2598,10 @@ function ingestMail_(body) {
     (body.threads || []).forEach(function (th) { updateThread_(box, th, null); });
     ensureMailTasks_();
     const sh = SpreadsheetApp.getActive().getSheetByName('Mailboxes');
-    const i = readTable_('Mailboxes').findIndex(function (m) { return norm_(m.mailbox) === norm_(body.mailbox); });
+    const i = readTable_('Mailboxes').findIndex(function (m) { return norm_(m.mailbox) === norm_(box.mailbox); });
     writeRowFields_(sh, headersOf_('Mailboxes'), i + 2, { last_ingest: new Date(), last_count: added.length });
     return { added: added.length };
-  });
+  })();
 }
 
 /** Gmail search the collector runs: the keyword terms of every active rule, plus supplier domains. */
