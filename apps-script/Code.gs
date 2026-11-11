@@ -54,6 +54,9 @@ const SEED = {
       ['PROJECT_REMINDER_ROLES', 'office', 'Who gets project follow-up reminders (e.g. quote sent 7 days ago)'],
       ['MAIL_LOOKBACK_DAYS', '3', 'The mailbox collector looks at mail from the last N days each run (already-saved mail is skipped)'],
       ['MAIL_KEEP_DAYS_IN_OA', '120', 'The OA page shows mail records from the last N days (older ones stay in the Mail tab)'],
+      ['PROPOSAL_PATTERN', '\\b(proposals?|estimates?|quotes?|quotations?|agreements?|contracts?)\\b', 'Words that mark an email we send as a proposal / estimate / agreement (regular expression)'],
+      ['PROPOSAL_REMIND_DAYS', '7', 'Remind every N days about a sent proposal until it is marked Signed or Not moving on'],
+      ['PROPOSAL_REMIND_ROLES', 'office', 'Who gets the proposal follow-up reminders (role ids, comma separated)'],
       ['CRM_LIFECYCLE', 'Lead|Opportunity|Customer|Past customer|Other', 'CRM lifecycle stages, in order, separated by |'],
       ['CRM_COMPANY_TYPES', 'Property manager|Building owner|General contractor|Architect / consultant|Condo corporation|Homeowner|Supplier|Other', 'CRM company types, separated by |'],
       ['CRM_IMPORT', 'TRUE', 'TRUE = the hourly sync adds contacts and companies from the Project Tracker, Sites and residential maintenance (never overwrites what you typed)'],
@@ -276,6 +279,7 @@ const SEED = {
        '{maintenance "service call" breakdown entrapment stuck "not working" "out of service"}', false, 'office', true, ''],
       ['Inspection', '\\b(tssa|inspection|deficienc(y|ies))\\b', 'any', '{TSSA inspection deficiency deficiencies}', false, 'office', true, ''],
       ['Invoice', '\\b(invoice|payment|remittance|overdue|e-?transfer|cheque)\\b', 'any', '{invoice payment remittance overdue e-transfer cheque}', false, 'office', true, ''],
+      ['Agreement', '\\b(agreements?|contracts?)\\b', 'any', '{agreement contract "maintenance agreement" filename:agreement filename:proposal filename:estimate filename:quote}', false, 'office', true, 'Agreements and contracts we send (sent-proposal follow-ups)'],
       ['Task', '\\b(urgent|asap|reminder|action required|deadline)\\b', 'any', '{urgent asap reminder "action required" deadline}', false, 'office', true, ''],
     ],
   },
@@ -386,6 +390,13 @@ const SEED = {
           'Do not edit here; Kyle can copy cells from this tab into the company sheet.',
     rows: [],
   },
+  'Sent Proposals': {
+    headers: ['proposal_id', 'kind', 'customer', 'email', 'subject', 'mailbox', 'first_sent_at', 'last_sent_at', 'site_id', 'site_name',
+              'amount', 'attachments', 'link', 'thread_id', 'status', 'status_at', 'status_by', 'status_note', 'source', 'created_at'],
+    widths: [160, 150, 200, 220, 320, 200, 150, 150, 80, 200, 110, 240, 260, 160, 90, 150, 200, 260, 90, 150],
+    note: 'Proposals, estimates, quotes and agreements we sent. The OA reminds every PROPOSAL_REMIND_DAYS days until status is ' +
+          'signed, declined (not moving on) or not_proposal. Found in sent mail automatically, or added by hand on the Mail page.', rows: [],
+  },
   'CRM Companies': {
     headers: ['company_id', 'name', 'type', 'lifecycle', 'phone', 'email', 'domain', 'address', 'city', 'owner', 'notes',
               'source', 'source_ref', 'created_at', 'created_by', 'updated_at', 'archived', 'archived_at', 'archived_by'],
@@ -470,6 +481,7 @@ function setup() {
   installMailQueueTrigger_();
   addMissingSeedRows_('Mailboxes', 'mailbox');
   addMissingSeedRows_('Roles', 'role_id');
+  addMissingSeedRows_('Mail Rules', 'category');
   fillRoleColumn_('sales');
   migrateProjectStages_();
   fillMailboxKeys_();
@@ -1129,6 +1141,8 @@ const ACTIONS = {
     run: function (user, p) { return confirmScope_(user, p); },
   },
   linkMail: { permission: 'mail.view', run: function (user, p) { return linkMail_(user, p); } },
+  proposalStatus: { permission: 'mail.view', run: function (user, p) { return proposalStatus_(user, p); } },
+  proposalAdd: { permission: 'mail.view', run: function (user, p) { return proposalAdd_(user, p); } },
   crm: { permission: 'crm.view', run: function (user) { return crmData_(user); } },
   crmSave: { permission: 'crm.edit', run: function (user, p) { return crmSave_(user, p); } },
   crmNote: { permission: 'crm.edit', run: function (user, p) { return crmNote_(user, p); } },
@@ -1968,6 +1982,7 @@ function refreshNotifications() {
   try {
     try { processMailQueueCore_(200); } catch (err) { Logger.log('Mail queue: ' + err.message); }
     try { ensureMonthTasks_(); ensureOrderTasks_(); ensureProjectTasks_(); ensureMailTasks_(); } catch (err) { Logger.log('Reminders: ' + err.message); }
+    try { syncProposals_(); ensureProposalTasks_(); } catch (err) { Logger.log('Proposals: ' + err.message); }
     let now = new Date();
     const last = PropertiesService.getScriptProperties().getProperty('NOTIFY_BATCH');
     if (last && new Date(last).getTime() >= now.getTime()) now = new Date(new Date(last).getTime() + 1000);  // batches never share a time
@@ -2652,6 +2667,7 @@ function ingestCore_(box, body) {
     });
     ensureTasks_(tasks);
     (body.threads || []).forEach(function (th) { updateThread_(box, th, null); });
+    try { syncProposals_(); ensureProposalTasks_(); } catch (err) { Logger.log('Proposals: ' + err.message); }
     ensureMailTasks_();
     const sh = SpreadsheetApp.getActive().getSheetByName('Mailboxes');
     const i = readTable_('Mailboxes').findIndex(function (m) { return norm_(m.mailbox) === norm_(box.mailbox); });
@@ -2712,6 +2728,8 @@ function workData_(user) {
     out.mail = readTable_('Mail').filter(function (m) { return new Date(m.received_at).getTime() >= since; }).map(function (m) {
       const o = iso(m); return o;
     }).sort(function (a, b) { return String(b.received_at).localeCompare(String(a.received_at)); }).slice(0, 600);
+    out.proposalDays = Number(getSettings_().PROPOSAL_REMIND_DAYS || 7);
+    out.proposals = readTable_('Sent Proposals').filter(function (p) { return p.status === 'open' || !p.status || new Date(p.status_at).getTime() >= since; }).map(iso);
     out.mailboxes = readTable_('Mailboxes').map(function (b) { return { mailbox: b.mailbox, owner: b.owner_name, active: isTrue_(b.active), last_ingest: b.last_ingest instanceof Date ? b.last_ingest.toISOString() : b.last_ingest }; });
   }
   out.syncedAt = new Date().toISOString();
@@ -3007,6 +3025,8 @@ function ensureMailTasks_() {
   const now = Date.now();
   const tasks = [];
   const threads = readTable_('Mail Threads');
+  const proposalOpen = {};
+  readTable_('Sent Proposals').forEach(function (p) { if (p.thread_id && (p.status === 'open' || !p.status)) proposalOpen[p.thread_id] = true; });
   threads.forEach(function (t) {
     const b = boxes[norm_(t.mailbox)]; if (!b) return;
     const lastIn = t.last_in_at ? new Date(t.last_in_at).getTime() : 0, lastOut = t.last_out_at ? new Date(t.last_out_at).getTime() : 0;
@@ -3017,7 +3037,7 @@ function ensureMailTasks_() {
       tasks.push({ key: 'UNANS:' + t.thread_id + ':' + day_(new Date(lastIn)), type: 'Not answered', assign_roles: roles, link: t.link, ref_id: t.thread_id,
                    title: 'Not answered for ' + Math.floor((now - lastIn) / 86400000) + ' days: ' + (t.subject || '(no subject)') + ' — ' + who + ' (' + t.mailbox + ')' });
     }
-    if (fu && lastOut > lastIn && now - lastOut >= fu * 86400000) {
+    if (fu && lastOut > lastIn && now - lastOut >= fu * 86400000 && !proposalOpen[t.thread_id]) {
       tasks.push({ key: 'FU:' + t.thread_id + ':' + day_(new Date(lastOut)), type: 'Follow up', assign_roles: roles, link: t.link, ref_id: t.thread_id,
                    title: 'No reply in ' + Math.floor((now - lastOut) / 86400000) + ' days — follow up: ' + (t.subject || '(no subject)') + ' → ' + who });
     }
@@ -3539,4 +3559,147 @@ function crmImport_(trackerTabs) {
   });
   return { companies: newCo.length, contacts: newCt.length, links: newLinks.length,
            filled: Object.keys(fills.company).length + Object.keys(fills.contact).length };
+}
+
+
+// ═════════════════════════════ Sent proposals: remind every 7 days until signed or not moving on ═════════════════════════════
+
+const PROPOSAL_DEFAULT_PATTERN = '\\b(proposals?|estimates?|quotes?|quotations?|agreements?|contracts?)\\b';
+const PROPOSAL_STATUSES = ['open', 'signed', 'declined', 'not_proposal'];
+
+function proposalKind_(text) {
+  if (/(maintenance|service)\s+(agreement|contract)/i.test(text)) return 'Maintenance agreement';
+  if (/estimate/i.test(text)) return 'Estimate';
+  if (/proposal/i.test(text)) return 'Proposal';
+  if (/quot(e|ation)/i.test(text)) return 'Quote';
+  return 'Agreement';
+}
+function proposalRe_() {
+  try { return new RegExp(String(getSettings_().PROPOSAL_PATTERN || PROPOSAL_DEFAULT_PATTERN), 'i'); }
+  catch (e) { return new RegExp(PROPOSAL_DEFAULT_PATTERN, 'i'); }
+}
+/** "Orlando Ruiz <orlando@x.com>, b@y.com" → [{ name, email }] */
+function addressList_(s) {
+  return String(s || '').split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/).map(function (part) {
+    const e = (/[\w.+'\-]+@[\w.\-]+\.[a-z]{2,}/i.exec(part) || [''])[0].toLowerCase();
+    const n = part.replace(/<[^>]*>/, '').replace(/["']/g, '').replace(e, '').trim();
+    return { name: n, email: e };
+  }).filter(function (x) { return x.email; });
+}
+
+/**
+ * Finds proposals in the mail we sent (last 60 days): an attachment plus a proposal word, or a new email (not "Re:")
+ * whose subject has one. Only emails to customers count (not to our own domain or to suppliers).
+ * A later email in the same thread with a new attachment restarts the 7-day count (a revised proposal).
+ */
+function syncProposals_() {
+  const re = proposalRe_();
+  const since = Date.now() - 60 * 86400000;
+  const own = unique_(readTable_('Mailboxes').map(function (b) { return String(norm_(b.mailbox)).split('@')[1] || ''; }).filter(String));
+  const supp = readTable_('Suppliers').map(function (x) { return String(x.email_domain || '').toLowerCase().trim(); }).filter(String);
+  const contacts = readTable_('CRM Contacts');
+  const sh = SpreadsheetApp.getActive().getSheetByName('Sent Proposals');
+  const head = headersOf_('Sent Proposals');
+  const have = {};
+  readTable_('Sent Proposals').forEach(function (p, i) { have[String(p.thread_id || p.proposal_id)] = { p: p, row: i + 2 }; });
+  let added = 0;
+  readTable_('Mail').filter(function (m) { return m.direction === 'out' && new Date(m.received_at).getTime() >= since; })
+    .sort(function (a, b) { return new Date(a.received_at) - new Date(b.received_at); })
+    .forEach(function (m) {
+      const subj = String(m.subject || ''), att = String(m.attachments || ''), body = String(m.excerpt || '');
+      const hit = (att && re.test(subj + '\n' + att + '\n' + body)) || (!/^\s*(re|aw)\s*:/i.test(subj) && re.test(subj));
+      if (!hit) return;
+      const to = addressList_(m.to).filter(function (a) {
+        const d = a.email.split('@')[1];
+        return own.indexOf(d) < 0 && !supp.some(function (sd) { return d.slice(-sd.length) === sd; });
+      });
+      if (!to.length) return;
+      const key = String(m.thread_id || m.mail_id), when = new Date(m.received_at);
+      const ex = have[key];
+      if (ex) {
+        if (att && (ex.p.status === 'open' || !ex.p.status) && when > new Date(ex.p.last_sent_at)) {
+          writeRowFields_(sh, head, ex.row, { last_sent_at: when, attachments: clean_(att, 500) });
+          ex.p.last_sent_at = when;
+        }
+        return;
+      }
+      const ct = contacts.filter(function (c) { return norm_(c.email) === to[0].email; })[0];
+      const name = ct ? ([ct.first_name, ct.last_name].filter(String).join(' ') || to[0].email) : (to[0].name || to[0].email);
+      const rec = { proposal_id: key, kind: proposalKind_(subj + ' ' + att + ' ' + body), customer: name, email: to[0].email, subject: subj,
+                    mailbox: m.mailbox, first_sent_at: when, last_sent_at: when, site_id: m.site_id, site_name: m.site_name,
+                    amount: String(m.amounts || '').split(' ')[0] || '', attachments: clean_(att, 500), link: m.link, thread_id: m.thread_id,
+                    status: 'open', status_at: '', status_by: '', status_note: '', source: 'mail', created_at: new Date() };
+      appendRecord_('Sent Proposals', rec);
+      have[key] = { p: rec, row: sh.getLastRow() };
+      added++;
+    });
+  return added;
+}
+
+/** One reminder per open proposal per PROPOSAL_REMIND_DAYS; last week's open reminder is replaced by this week's. */
+function ensureProposalTasks_() {
+  const s = getSettings_();
+  const days = Math.max(1, Number(s.PROPOSAL_REMIND_DAYS || 7)), roles = String(s.PROPOSAL_REMIND_ROLES || 'office');
+  const now = Date.now();
+  const tasks = [], keep = {};
+  readTable_('Sent Proposals').forEach(function (p) {
+    if (p.status && p.status !== 'open') return;
+    const sent = new Date(p.last_sent_at || p.first_sent_at);
+    if (isNaN(sent)) return;
+    const n = Math.floor((now - sent.getTime()) / (days * 86400000));
+    if (n < 1) return;
+    const key = 'PROP:' + p.proposal_id + ':' + day_(sent) + ':' + n;
+    keep[key] = true;
+    const ago = Math.floor((now - sent.getTime()) / 86400000);
+    tasks.push({ key: key, type: 'Proposal follow-up', assign_roles: roles, link: p.link || '#/mail', ref_id: p.proposal_id, site_id: p.site_id || '',
+                 title: 'Follow up with ' + (p.customer || p.email || 'the customer') + ': ' + (p.kind || 'proposal') + ' sent ' + ago + ' days ago (' + day_(sent) + ')' +
+                   (p.site_name ? ' · ' + p.site_name : '') + ' — no decision yet. Mark it Signed or Not moving on in Mail → Proposals.' });
+  });
+  const made = ensureTasks_(tasks).length;
+  closeTasks_(function (t) { return /^PROP:/.test(String(t.key)) && !keep[t.key]; }, 'OA', 'Replaced by the next reminder or the proposal was closed');
+  return made;
+}
+
+function proposalStatus_(user, p) {
+  const status = String(p.status || '');
+  if (PROPOSAL_STATUSES.indexOf(status) < 0) throw new Error('Status must be one of: ' + PROPOSAL_STATUSES.join(', '));
+  return withLock_(function () {
+    const cur = readTable_('Sent Proposals').filter(function (x) { return String(x.proposal_id) === String(p.proposal_id); })[0];
+    if (!cur) throw new Error('Proposal ' + p.proposal_id + ' does not exist.');
+    const out = updateRecord_('Sent Proposals', 'proposal_id', String(p.proposal_id), status === 'open'
+      ? { status: 'open', status_at: '', status_by: '', status_note: '', last_sent_at: p.restart ? new Date() : cur.last_sent_at }
+      : { status: status, status_at: new Date(), status_by: user.email, status_note: clean_(p.note, 500) });
+    ensureProposalTasks_();
+    // A signed agreement makes the CRM contact a customer.
+    if (status === 'signed' && cur.email) {
+      const ct = readTable_('CRM Contacts').filter(function (c) { return norm_(c.email) === norm_(cur.email) && !isTrue_(c.archived); })[0];
+      if (ct) {
+        if (['', 'Lead', 'Opportunity'].indexOf(String(ct.lifecycle || '')) >= 0) updateRecord_('CRM Contacts', 'contact_id', ct.contact_id, { lifecycle: 'Customer', updated_at: new Date() });
+        appendRecord_('CRM Notes', { note_id: 'N' + Utilities.getUuid().replace(/-/g, '').slice(0, 10), object_type: 'contact', object_id: ct.contact_id,
+                                     text: (cur.kind || 'Proposal') + ' signed' + (p.note ? ': ' + clean_(p.note, 500) : '') + ' (' + (cur.subject || '') + ')', by: user.email, at: new Date() });
+      }
+    }
+    audit_(user.email, 'proposal.' + status, String(p.proposal_id), clean_(p.note, 300));
+    return { proposal: isoRow_(out) };
+  });
+}
+
+/** A proposal sent another way (in person, by text, from another mailbox) that should get the same weekly reminders. */
+function proposalAdd_(user, p) {
+  const customer = clean_(p.customer, 200);
+  if (!customer) throw new Error('Who was it sent to?');
+  const email = norm_(clean_(p.email, 200));
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('"' + email + '" is not an email address.');
+  const sent = p.sent_at ? new Date(p.sent_at + (/^\d{4}-\d{2}-\d{2}$/.test(p.sent_at) ? 'T12:00:00' : '')) : new Date();
+  if (isNaN(sent) || sent.getTime() > Date.now() + 86400000) throw new Error('Pick the day it was sent.');
+  return withLock_(function () {
+    const rec = { proposal_id: 'PM' + Utilities.getUuid().replace(/-/g, '').slice(0, 8), kind: clean_(p.kind, 60) || 'Proposal', customer: customer, email: email,
+                  subject: clean_(p.subject, 300), mailbox: user.email, first_sent_at: sent, last_sent_at: sent, site_id: '', site_name: clean_(p.site_name, 200),
+                  amount: clean_(p.amount, 40), attachments: '', link: '', thread_id: '', status: 'open', status_at: '', status_by: '', status_note: '',
+                  source: 'manual', created_at: new Date() };
+    appendRecord_('Sent Proposals', rec);
+    ensureProposalTasks_();
+    audit_(user.email, 'proposal.add', rec.proposal_id, customer + ' · ' + rec.kind);
+    return { proposal: isoRow_(rec) };
+  });
 }

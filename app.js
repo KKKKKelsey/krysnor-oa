@@ -1553,7 +1553,7 @@
       (st === 'all' || (st === 'open' ? m.status !== 'ignored' : m.status === st)) &&
       (!q || [m.subject, m.from, m.to, m.excerpt, m.site_name, m.supplier].join(' ').toLowerCase().indexOf(q) >= 0));
     const boxes = (w.mailboxes || []).map((b) => esc(b.owner || b.mailbox) + ': ' + (b.active ? (b.last_ingest ? 'checked ' + esc(ago(b.last_ingest)) : 'waiting for the first run') : 'not connected yet')).join(' · ');
-    view().innerHTML = '<div class="page-head"><h1>Mail</h1><span class="muted">' + boxes + '</span></div>' +
+    view().innerHTML = '<div class="page-head"><h1>Mail</h1><span class="muted">' + boxes + '</span></div>' + proposalsHtml(w) +
       '<p class="muted">Emails about quotes, orders, installs, maintenance and tasks, collected read-only from the mailbox. Open one to file it under an order or project.</p>' +
       '<div class="search-box"><input id="ml-q" type="search" placeholder="Subject, sender, address…" value="' + esc(state.mailQ || '') + '" aria-label="Search mail"></div>' +
       '<div class="chips-row">' + [''].concat(MAIL_CATS).map((c) => { const n = w.mail.filter((m) => m.status !== 'ignored' && (!c || String(m.categories).split(',').indexOf(c) >= 0)).length;
@@ -1562,9 +1562,66 @@
         '<option value="linked"' + (st === 'linked' ? ' selected' : '') + '>Filed</option><option value="ignored"' + (st === 'ignored' ? ' selected' : '') + '>Ignored</option><option value="all"' + (st === 'all' ? ' selected' : '') + '>All</option></select></div>' +
       (list.length ? '<div class="list">' + list.slice(0, 200).map(mailRow).join('') + '</div>' : '<div class="empty">' + (w.mail.length ? 'Nothing matches.' : 'No emails yet. They appear here once the collector runs in Kyle\'s account.') + '</div>');
     bindMailCards(view());
+    bindProposals();
     view().querySelectorAll('[data-cat]').forEach((b) => b.addEventListener('click', () => { state.mailCat = b.dataset.cat; renderMail(); }));
     $('#ml-st').addEventListener('change', (e) => { state.mailSt = e.target.value; renderMail(); });
     const qi = $('#ml-q'); qi.addEventListener('input', () => { state.mailQ = qi.value; const p = qi.selectionStart; renderMail(); const n = $('#ml-q'); n.focus(); n.setSelectionRange(p, p); });
+  }
+
+  // ── Sent proposals: a reminder every 7 days until someone marks Signed / Not moving on ──
+  const PROP_LABEL = { signed: 'Signed', declined: 'Not moving on', not_proposal: 'Not a proposal' };
+  const propOpen = (p) => !p.status || p.status === 'open';
+  function proposalCard(p) {
+    const sent = new Date(p.last_sent_at || p.first_sent_at);
+    const days = isNaN(sent) ? 0 : Math.floor((Date.now() - sent.getTime()) / 86400000);
+    const open = propOpen(p);
+    return '<div class="card prop-card" data-prop="' + esc(p.proposal_id) + '"><div class="card-top"><span class="chip">' + esc(p.kind || 'Proposal') + '</span>' +
+        (open ? '<span class="chip ' + (days >= 7 ? 't-warn' : '') + '">' + (days < 1 ? 'Sent today' : days + ' day' + (days === 1 ? '' : 's') + ' waiting') + '</span>'
+              : '<span class="chip ' + (p.status === 'signed' ? 't-ok' : '') + '">' + esc(PROP_LABEL[p.status] || p.status) + '</span>') + '</div>' +
+      '<div class="card-title">' + esc(p.customer || p.email || '—') + '</div>' +
+      '<div class="card-meta">' + esc([p.subject, 'sent ' + dShort(p.last_sent_at || p.first_sent_at), p.amount, p.site_name].filter(Boolean).join(' · ')) +
+        (!open ? ' · ' + esc(who(p.status_by)) + ' ' + esc(dShort(p.status_at)) + (p.status_note ? ' — ' + esc(p.status_note) : '') : '') + '</div>' +
+      '<div class="actions">' + (p.link ? '<a class="btn ghost" href="' + esc(p.link) + '" target="_blank" rel="noopener">Open email</a>' : '') +
+        (open ? '<input type="text" class="note-in" placeholder="Note (optional)" aria-label="Note">' +
+          '<button class="btn primary" type="button" data-ps="signed">Signed</button><button class="btn" type="button" data-ps="declined">Not moving on</button>' +
+          '<button class="btn ghost" type="button" data-ps="not_proposal">Not a proposal</button>'
+          : '<button class="btn ghost" type="button" data-ps="open">Reopen</button>') + '</div></div>';
+  }
+  function proposalsHtml(w) {
+    const ps = w.proposals || [];
+    const open = ps.filter(propOpen).sort((a, b) => String(a.last_sent_at).localeCompare(String(b.last_sent_at)));
+    const closed = ps.filter((p) => !propOpen(p)).sort((a, b) => String(b.status_at).localeCompare(String(a.status_at))).slice(0, 30);
+    return '<section class="props-box" id="proposals"><h2>Proposals waiting for a decision · ' + open.length + '</h2>' +
+      '<p class="muted">Proposals, estimates, quotes and agreements sent to customers. A reminder comes every ' + esc(String((state.work && state.work.proposalDays) || 7)) +
+        ' days until it is marked Signed or Not moving on — a reply alone does not stop it.</p>' +
+      (open.length ? '<div class="list">' + open.map(proposalCard).join('') + '</div>' : '<div class="empty">Nothing waiting. New ones are found in sent mail automatically.</div>') +
+      '<details class="add-prop"><summary>Add one sent another way (in person, by text…)</summary><form class="stack" id="pa" novalidate><div class="row2">' +
+        '<label class="field"><span>Customer</span><input id="pa-c" type="text" placeholder="e.g. Orlando Ruiz"></label>' +
+        '<label class="field"><span>Email (optional)</span><input id="pa-e" type="email"></label></div><div class="row2">' +
+        '<label class="field"><span>What was sent</span><select id="pa-k"><option>Maintenance agreement</option><option>Proposal</option><option>Estimate</option><option>Quote</option><option>Agreement</option></select></label>' +
+        '<label class="field"><span>Sent on</span><input id="pa-d" type="date" value="' + new Date().toISOString().slice(0, 10) + '"></label></div>' +
+        '<label class="field"><span>Address (optional)</span><input id="pa-s" type="text"></label>' +
+        '<p class="muted" id="pa-err" role="alert"></p><div class="actions"><button class="btn primary" type="submit">Add</button></div></form></details>' +
+      (closed.length ? '<details class="closed-props"><summary>Decided · ' + closed.length + '</summary><div class="list">' + closed.map(proposalCard).join('') + '</div></details>' : '') +
+      '</section><h2>Emails</h2>';
+  }
+  function bindProposals() {
+    view().querySelectorAll('[data-prop]').forEach((card) => card.querySelectorAll('[data-ps]').forEach((b) => b.addEventListener('click', async () => {
+      if (!online()) { toast('This needs the internet.'); return; }
+      const note = card.querySelector('.note-in');
+      b.disabled = true;
+      try { await api('proposalStatus', { proposal_id: card.dataset.prop, status: b.dataset.ps, note: note ? note.value : '' });
+            await loadWork(); toast(b.dataset.ps === 'open' ? 'Reopened' : PROP_LABEL[b.dataset.ps]); renderMail(); }
+      catch (ex) { b.disabled = false; toast(ex.message); }
+    })));
+    const f = $('#pa');
+    if (f) f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const err = $('#pa-err'); err.textContent = '';
+      try { await api('proposalAdd', { customer: $('#pa-c').value, email: $('#pa-e').value, kind: $('#pa-k').value, sent_at: $('#pa-d').value, site_name: $('#pa-s').value });
+            await loadWork(); toast('Added — reminders every 7 days'); renderMail(); }
+      catch (ex) { err.textContent = ex.message; }
+    });
   }
 
   /** Orders, projects and emails at one address, for the site page. */
@@ -2053,6 +2110,11 @@
       items.push({ at: r.server_time, kind: 'Service report', who: r.tech_name, html: '<p><a href="#/reports/' + encodeURIComponent(r.report_id) + '">' + esc(r.report_id) + '</a> · ' + esc(r.site_name || '') +
         ' · ' + esc([r.call_type, r.work_done].filter(Boolean).join(' — ')) + '</p>' });
     });
+    const emails = new Set((type === 'contact' ? [rec] : CRM().contacts.filter((c) => c.company_id === id)).map((c) => String(c.email || '').toLowerCase()).filter(Boolean));
+    (W().proposals || []).filter((p) => p.email && emails.has(String(p.email).toLowerCase())).forEach((p) => {
+      items.push({ at: p.first_sent_at, kind: p.kind || 'Proposal', who: p.mailbox, html: '<p>' + (p.link ? '<a href="' + esc(p.link) + '" target="_blank" rel="noopener">' + esc(p.subject || 'Sent') + '</a>' : esc(p.subject || 'Sent')) +
+        ' · ' + (propOpen(p) ? '<b>waiting for a decision</b>' : '<b>' + esc(PROP_LABEL[p.status] || p.status) + '</b>') + '</p>' });
+    });
     items.sort((a, b) => String(b.at).localeCompare(String(a.at)));
     return items;
   }
@@ -2314,7 +2376,15 @@
   // Pick up the 9:00 list without a reload (checks every 15 minutes while the page is open).
   setInterval(() => { if (state.me && online() && tokenValid()) loadNotes(); }, 15 * 60000);
 
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator) {
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloaded) { reloaded = true; location.reload(); } });
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
+      reg.update().catch(() => {});
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+    }).catch(() => {});
+  }
 
   (async function start() {
     await loadOutbox();

@@ -544,3 +544,12 @@ input[type=date] { width: 100%; padding: 9px 11px; border: 1px solid var(--line)
   .crm-tools .flt { flex: 1 1 140px; } .crm-tools .flt select { width: 100%; min-width: 0; }
   .crm-head .actions { width: 100%; } .crm-head .actions .btn { flex: 1; }
 }
+
+/* sent proposals */
+.props-box { border: 1px solid var(--line); border-radius: 10px; padding: 4px 14px 12px; margin: 8px 0 16px; background: var(--surface); }
+.props-box > h2 { margin-top: 12px; }
+.prop-card .actions { align-items: center; }
+.prop-card .note-in { flex: 1 1 180px; width: auto; }
+.add-prop, .closed-props { margin-top: 10px; }
+.add-prop summary, .closed-props summary { cursor: pointer; font-weight: 600; color: var(--navy); }
+.add-prop form { margin-top: 10px; }

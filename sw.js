@@ -1,10 +1,11 @@
 // Offline support: keep the app shell on the phone; data is cached by app.js.
-const CACHE = 'krysnor-oa-v12';
+const CACHE = 'krysnor-oa-v13';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './config.js', './manifest.webmanifest',
                './icons/icon-192.png', './icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  // cache: 'reload' skips the browser's HTTP cache, so a new version never stores yesterday's files.
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
