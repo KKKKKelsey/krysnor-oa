@@ -414,3 +414,6 @@ input[type=date] { width: 100%; padding: 9px 11px; border: 1px solid var(--line)
 .sug-list .check-links { align-items: center; flex-wrap: wrap; }
 .sg-stage { width: auto; min-height: 30px; padding: 2px 6px; font-size: 13px; }
 .checklist label span span { display: inline; }
+
+.site-links{margin:.25rem 0 .75rem}
+.site-open{font-size:.85rem;font-weight:500;margin-left:.5rem;white-space:nowrap}

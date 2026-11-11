@@ -599,6 +599,7 @@
   const siteKey = (s) => addrKey(s.address) || addrKey(s.name);
   const FREQ_ORDER = { monthly: 1, quarterly: 2, 'semi-annual': 3, 'semi annual': 3, 'bi-annual': 3 };
   function renderSites() {
+    if (!state.data) { view().innerHTML = '<div class="empty">Connect once to download the site list.</div>'; return; }
     const sites = ((state.data && state.data.sites) || []).slice()
       .sort((a, b) => (FREQ_ORDER[String(a.frequency).toLowerCase()] || 9) - (FREQ_ORDER[String(b.frequency).toLowerCase()] || 9) || String(a.name).localeCompare(String(b.name)));
     const q = (state.siteQ || '').toLowerCase();
@@ -619,8 +620,7 @@
         '<p class="muted" id="s-error" role="alert"></p>' +
         '<div class="actions"><button class="btn primary" type="submit">Add site</button></div>' +
       '</form></details>' : '';
-    if (!state.data) { view().innerHTML = '<div class="empty">Connect once to download the site list.</div>'; return; }
-    view().innerHTML = '<div class="page-head"><h1>Sites</h1><span class="muted">' + sites.length + ' fixed addresses</span></div>' +
+    view().innerHTML = '<a class="back" href="#/search">‹ Search</a><div class="page-head"><h1>Sites</h1><span class="muted">' + sites.length + ' fixed addresses</span></div>' +
       '<div class="search-box"><input id="site-q" type="search" placeholder="Filter sites…" value="' + esc(state.siteQ || '') + '" aria-label="Filter sites"></div>' +
       addForm +
       Object.keys(groups).map((g) => '<h2>' + esc(g) + ' · ' + groups[g].length + '</h2><div class="list">' +
@@ -817,7 +817,11 @@
     view().innerHTML =
       '<div class="filters"><input id="s-q" class="search" type="search" autocomplete="off" ' +
         'placeholder="Address, name, phone or email…" value="' + esc(state.search) + '"></div>' +
-      '<p class="muted" id="s-meta"></p><div class="list" id="s-results"></div>';
+      '<p class="muted" id="s-meta"></p>' +
+      (state.data && state.data.sites && state.data.sites.length ? '<p class="site-links"><a href="#/sites">All ' + state.data.sites.length + ' maintenance sites ›</a></p>' : '') +
+      '<div class="list" id="s-results"></div>';
+    const siteByKey = {};
+    ((state.data && state.data.sites) || []).forEach((s) => { const k = siteKey(s); if (k && !siteByKey[k]) siteByKey[k] = s; });
     const meta = $('#s-meta');
     if (!ready) meta.textContent = online() ? 'Downloading the company sheets…' : 'The company sheets are not on this device yet. Connect once to download them.';
     else meta.textContent = 'Searching ' + idx.items.length.toLocaleString() + ' rows from ' +
@@ -831,7 +835,8 @@
       box.innerHTML = shown.map((g) => {
         const head = g.key.charAt(0) === '~' ? '' : (g.items.find((i) => i.addr) || g.items[0]);
         return '<section class="group">' +
-          (head ? '<h2>' + esc(head.addr || head.title) + ' <span class="muted">· ' + g.items.length + ' record' + (g.items.length > 1 ? 's' : '') + '</span></h2>' : '') +
+          (head ? '<h2>' + esc(head.addr || head.title) + ' <span class="muted">· ' + g.items.length + ' record' + (g.items.length > 1 ? 's' : '') + '</span>' +
+            (siteByKey[g.key] ? ' <a class="site-open" href="#/sites/' + encodeURIComponent(siteByKey[g.key].site_id) + '">Site page ›</a>' : '') + '</h2>' : '') +
           g.items.slice(0, 12).map(resultCard).join('') +
           (g.items.length > 12 ? '<p class="muted">' + (g.items.length - 12) + ' more — refine the search to see them.</p>' : '') +
         '</section>';
@@ -1755,7 +1760,7 @@
     const [path, query] = hash.slice(1).split('?');
     const parts = path.split('/').filter(Boolean);
     const tab = parts[0] || 'reports';
-    document.querySelectorAll('.tabs a').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
+    document.querySelectorAll('.tabs a').forEach((a) => a.classList.toggle('active', a.dataset.tab === (tab === 'sites' ? 'search' : tab)));
     view().classList.toggle('wide', tab === 'tables' || tab === 'schedule' || (tab === 'orders' && !parts[1]));
     if (tab === 'search') renderSearch();
     else if (tab === 'schedule') renderSchedule();
