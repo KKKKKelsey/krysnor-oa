@@ -1366,15 +1366,48 @@
     return (W().projectStages || []).filter((s) => s.type_id === p.type_id && (String(s.segments || 'ALL').toUpperCase() === 'ALL' || String(s.segments).toUpperCase() === String(p.segment_id).toUpperCase()))
       .sort((a, b) => Number(a.order) - Number(b.order));
   }
+  const stepsFor = (typeId, seg) => projectSteps({ type_id: typeId, segment_id: seg });
   function renderProjects() {
     const w = W();
     if (!w.projects) { view().innerHTML = '<div class="empty">' + (state.work ? 'Your role cannot see projects.' : 'Connect once to download projects.') + '</div>'; return; }
     const showClosed = !!state.projClosed;
-    const list = w.projects.filter((p) => showClosed || p.status !== 'closed').sort((a, b) => String(b.updated_at || b.created_at).localeCompare(String(a.updated_at || a.created_at)));
+    const stepFilter = state.projStep || '';
+    const open = w.projects.filter((p) => p.status !== 'closed');
+    const list = w.projects.filter((p) => (showClosed || p.status !== 'closed') && (!stepFilter || p.type_id + '|' + p.stage === stepFilter))
+      .sort((a, b) => String(b.updated_at || b.created_at).localeCompare(String(a.updated_at || a.created_at)));
     const byType = {}; list.forEach((p) => { (byType[p.type_id] = byType[p.type_id] || []).push(p); });
+    // Flow of each project type with how many open projects sit in each step (click a step to filter)
+    const types = [...new Set(['INS', 'REP'].concat(open.map((p) => p.type_id)))].filter((t) => (w.projectStages || []).some((s) => s.type_id === t));
+    const flow = types.map((t) => {
+      const names = [...new Set((w.projectStages || []).filter((s) => s.type_id === t).sort((a, b) => Number(a.order) - Number(b.order)).map((s) => s.stage))];
+      return '<div class="pipe"><div class="pipe-h">' + esc(typeName(t).name) + '</div><ol>' + names.map((n) => {
+        const c = open.filter((p) => p.type_id === t && p.stage === n).length;
+        const st = (w.projectStages || []).find((s) => s.type_id === t && s.stage === n) || {};
+        const who = String(st.assign_roles || '').split(',').map((r) => ({ manager: 'Chris', office: 'Kyle', technician: 'Tech', sales: 'Sales', admin: 'Kaixin' })[r.trim()] || '').filter(Boolean).join('/');
+        return '<li class="' + (c ? 'has' : '') + (stepFilter === t + '|' + n ? ' on' : '') + '"><button type="button" data-step="' + esc(t + '|' + n) + '"' + (c ? '' : ' disabled') + '>' +
+          '<b>' + (c || '') + '</b><span>' + esc(n) + '</span>' + (who ? '<small>' + esc(who) + (String(st.segments || 'ALL') !== 'ALL' ? ' · ' + esc(st.segments) : '') + '</small>' : '') + '</button></li>';
+      }).join('') + '</ol></div>';
+    }).join('');
+    // Ongoing jobs found in the Project Tracker and in mail
+    const sug = (w.suggestions || []).slice().sort((a, b) => String(b.proposal_date || b.inquiry_date).localeCompare(String(a.proposal_date || a.inquiry_date)));
+    const sugHtml = sug.length && can('project.create') ? '<details class="sug"' + (state.sugClosed ? '' : ' open') + '><summary><b>Ongoing jobs found · ' + sug.length + '</b>' +
+        '<span class="muted">from the company Project Tracker and mail — tick the real ones and add them</span></summary>' +
+        '<div class="actions"><button class="btn ghost" type="button" id="sg-all">Select all</button><button class="btn primary" type="button" id="sg-add">Add selected</button><span class="muted" id="sg-msg"></span></div>' +
+        '<ul class="checklist sug-list">' + sug.map((x) => {
+          const steps = stepsFor(x.type_id, x.segment_id).map((s) => s.stage);
+          return '<li class="check" data-ref="' + esc(x.ref) + '"><label><input type="checkbox" class="sg-cb">' +
+            '<span><b>' + esc(x.title) + '</b><small>' + esc(x.source) + ' · ' + esc(x.segment_id === 'RES' ? 'Residential' : 'Commercial') + ' · ' + esc(typeName(x.type_id).name) +
+            (x.value ? ' · <span class="mono">' + moneyFmt(x.value) + '</span>' : '') +
+            (x.proposal_date ? ' · quote sent ' + esc(dShort(x.proposal_date)) : x.inquiry_date ? ' · enquiry ' + esc(dShort(x.inquiry_date)) : '') +
+            (x.site_name ? '<br>' + esc(x.site_name) : '') + (x.next_steps ? '<br>' + esc(x.next_steps) : '') + '</small></span></label>' +
+            '<span class="check-links"><select class="sg-stage" aria-label="Step">' + steps.map((n) => '<option' + (n === x.stage ? ' selected' : '') + '>' + esc(n) + '</option>').join('') + '</select>' +
+            (x.link ? '<a href="' + esc(x.link) + '" target="_blank" rel="noopener">Source</a>' : '') + '<a href="#" class="sg-no">Not a job</a></span></li>';
+        }).join('') + '</ul></details>' : '';
     view().innerHTML = '<div class="page-head"><h1>Projects</h1>' + (can('project.create') ? '<a class="btn primary" href="#/projects/new">New project</a>' : '') +
       '<label class="check-row"><input type="checkbox" id="pj-closed"' + (showClosed ? ' checked' : '') + '>Show closed</label></div>' +
-      (list.length ? '' : '<div class="empty">No open projects.</div>') +
+      sugHtml + flow +
+      (stepFilter ? '<p class="muted">Showing step "' + esc(stepFilter.split('|')[1]) + '" · <a href="#" id="pj-clear">show all</a></p>' : '') +
+      (list.length ? '' : '<div class="empty">' + (sug.length ? 'No projects yet — add the ongoing jobs found above.' : 'No open projects.') + '</div>') +
       Object.keys(byType).map((t) => '<h2>' + esc(typeName(t).name) + ' · ' + byType[t].length + '</h2><div class="list">' + byType[t].map((p) => {
         const steps = projectSteps(p); const i = steps.findIndex((s) => s.stage === p.stage);
         return '<a class="card" href="#/projects/' + encodeURIComponent(p.project_id) + '"><div class="card-top"><span class="ticket">' + esc(p.project_id) + '</span><span class="chip">' + esc(p.segment_id) + '</span>' +
@@ -1382,6 +1415,23 @@
           '<div class="card-title">' + esc(p.title) + '</div><div class="card-meta"><span>' + esc(p.site_name || '') + '</span>' + (p.customer ? '<span>' + esc(p.customer) + '</span>' : '') + (p.value ? '<span class="mono">' + moneyFmt(p.value) + '</span>' : '') + '</div></a>';
       }).join('') + '</div>').join('');
     $('#pj-closed').addEventListener('change', (e) => { state.projClosed = e.target.checked; renderProjects(); });
+    view().querySelectorAll('[data-step]').forEach((b) => b.addEventListener('click', () => { state.projStep = state.projStep === b.dataset.step ? '' : b.dataset.step; renderProjects(); }));
+    const clr = $('#pj-clear'); if (clr) clr.addEventListener('click', (e) => { e.preventDefault(); state.projStep = ''; renderProjects(); });
+    const sd = view().querySelector('details.sug'); if (sd) sd.addEventListener('toggle', () => { state.sugClosed = !sd.open; });
+    const all = $('#sg-all'); if (all) all.addEventListener('click', () => { const cbs = view().querySelectorAll('.sg-cb'); const on = Array.from(cbs).some((c) => !c.checked); cbs.forEach((c) => { c.checked = on; }); });
+    view().querySelectorAll('.sg-no').forEach((a) => a.addEventListener('click', async (e) => {
+      e.preventDefault(); const li = a.closest('li'); const ref = li.dataset.ref;
+      try { await api('dismissSuggestion', { ref }); w.suggestions = w.suggestions.filter((x) => x.ref !== ref); li.remove(); toast('Removed from the list'); } catch (ex) { toast(ex.message); }
+    }));
+    const add = $('#sg-add');
+    if (add) add.addEventListener('click', async () => {
+      const items = Array.from(view().querySelectorAll('.sug-list li')).filter((li) => li.querySelector('.sg-cb').checked)
+        .map((li) => ({ ref: li.dataset.ref, stage: li.querySelector('.sg-stage').value }));
+      if (!items.length) { $('#sg-msg').textContent = 'Tick at least one job.'; return; }
+      add.disabled = true; $('#sg-msg').textContent = 'Adding ' + items.length + '…';
+      try { const r = await api('acceptSuggestions', { items }); await loadWork(); loadNotes(); toast(r.added.length + ' project' + (r.added.length === 1 ? '' : 's') + ' added'); renderProjects(); }
+      catch (ex) { add.disabled = false; $('#sg-msg').textContent = ex.message; }
+    });
   }
   function renderProjectNew(params) {
     if (!can('project.create')) { view().innerHTML = '<div class="empty">Your role cannot open projects.</div>'; return; }

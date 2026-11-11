@@ -162,7 +162,7 @@ const SEED = {
   'Projects': {
     headers: ['project_id', 'type_id', 'segment_id', 'site_id', 'title', 'status', 'owner_email',
               'folder_id', 'folder_url', 'created_at', 'created_by', 'notes', 'stage', 'stage_at', 'site_name', 'addr_key',
-              'customer', 'contact', 'value', 'updated_at', 'payment_plan', 'scope', 'materials', 'scope_by', 'scope_at'],
+              'customer', 'contact', 'value', 'updated_at', 'payment_plan', 'scope', 'materials', 'scope_by', 'scope_at', 'source_ref'],
     widths: [130, 70, 90, 90, 240, 130, 200, 260, 300, 150, 200, 220, 180, 150, 220, 100, 180, 220, 90, 150, 300], rows: [],
   },
   'Project Stages': {
@@ -273,6 +273,15 @@ const SEED = {
       ['Invoice', '\\b(invoice|payment|remittance|overdue|e-?transfer|cheque)\\b', 'any', '{invoice payment remittance overdue e-transfer cheque}', false, 'office', true, ''],
       ['Task', '\\b(urgent|asap|reminder|action required|deadline)\\b', 'any', '{urgent asap reminder "action required" deadline}', false, 'office', true, ''],
     ],
+  },
+  'Project Suggestions': {
+    headers: ['ref', 'source', 'title', 'type_id', 'segment_id', 'site_name', 'stage', 'contact', 'value', 'inquiry_date',
+              'proposal_date', 'accepted_date', 'next_steps', 'link', 'status', 'project_id', 'updated_at'],
+    widths: [120, 120, 280, 70, 80, 240, 200, 220, 90, 100, 100, 100, 260, 220, 80, 120, 150],
+    note: 'Jobs that look ongoing, found every hour in the company Project Tracker (Quote & Lead follow up, last 12 months, ' +
+          'not marked lost) and in mail conversations about quotes / installs. Add them from the Projects page. ' +
+          'status: new / added / dismissed (kept, so a dismissed job is not suggested again).',
+    rows: [],
   },
   'Mail Queue': {
     headers: ['queued_at', 'mailbox', 'kind', 'payload'],
@@ -418,7 +427,8 @@ const BACKUP_NAME_PREFIX = 'Krysnor OA Master backup ';
 const TEXT_COLUMNS = ['report_id', 'project_id', 'site_id', 'unit_id', 'arrived', 'left', 'contact_phone', 'phone', 'task_id', 'ref_id',
                       'installation_no', 'scheduled_week', 'contract_expiry',
                       'client_id', 'amends_report_id', 'folder_id', 'file_id', 'order_id', 'price_id', 'part_no', 'mail_id',
-                      'thread_id', 'quote_ref', 'key', 'month', 'ready_date', 'date', 'date_value', 'due_months', 'due_months_override', 'done_months', 'event_id', 'payment_plan', 'template_id'];
+                      'thread_id', 'quote_ref', 'key', 'month', 'ready_date', 'date', 'date_value', 'due_months', 'due_months_override', 'done_months', 'event_id', 'payment_plan', 'template_id', 'ref', 'source_ref',
+                      'inquiry_date', 'proposal_date', 'accepted_date'];
 
 // ───────────────────────────── Setup ─────────────────────────────
 
@@ -1073,6 +1083,12 @@ const ACTIONS = {
       return saveProject_(user, p);
     },
   },
+  suggestions: { permission: 'project.create', run: function (user) { return { items: readTable_('Project Suggestions').filter(function (x) { return x.status === 'new'; }).map(isoRow_) }; } },
+  acceptSuggestions: { permission: 'project.create', run: function (user, p) { return acceptSuggestions_(user, p); } },
+  dismissSuggestion: {
+    permission: 'project.create',
+    run: function (user, p) { return withLock_(function () { updateRecord_('Project Suggestions', 'ref', p.ref, { status: 'dismissed', updated_at: new Date() }); return { ref: p.ref }; }); },
+  },
   projectStep: {
     // project.edit may move a project to any step; the person a step is assigned to may finish that step (next step or one of its choices).
     permission: 'view.all',
@@ -1500,6 +1516,7 @@ function syncSources() {
     .replace(/\{YEAR\}/g, String(year)) + ')$', 'i');
   const importRaw = [];
   const contractsByYear = {};   // commercial maintenance contracts per year → Maintenance Plan
+  const trackerQuotes = [];     // company Project Tracker "Quote & Lead follow up" → Project Suggestions
   const opened = {};   // each file is read once, even if several sources use it
   try {
     const sheet = SpreadsheetApp.getActive().getSheetByName('Data Sources');
@@ -1522,6 +1539,7 @@ function syncSources() {
               rowUrl: function (row) { return book.native ? book.url + '#gid=' + gid + '&range=A' + row : book.url; },
             };
             const values = sh.getDataRange().getValues();
+            if (String(src.source_id) === 'TRACKER' && /quote.*lead/i.test(tab)) trackerQuotes.push({ values: values, url: book.url, gid: gid });
             const isTable = String(src.parser).trim() !== 'schedule';
             const found = isTable ? parseTable_(values, ctx) : parseSchedule_(values, ctx);
             if (isTable) {
@@ -1568,6 +1586,7 @@ function syncSources() {
                       rows: log.rows.map(function (r, i) { return { r: i + 2, c: r.map(cellText_) }; }) });
         report.push('Sites: ' + res.added + ' added, ' + res.updated + ' updated, ' + res.units + ' units added; maintenance log ' + log.rows.length + ' rows');
         const planRows = writeMaintenancePlan_(maintenancePlan_(contractsByYear, year), year);
+        try { report.push('Project suggestions: ' + rebuildSuggestions_(trackerQuotes) + ' new'); } catch (err) { report.push('Project suggestions FAILED: ' + err.message); }
         const mt = ensureMonthTasks_();
         report.push('Maintenance plan ' + planRows + ' sites; ' + mt.month + ': ' + mt.created + ' new reminders, ' + mt.closed + ' ticked off from the record');
       } catch (err) {
@@ -2644,6 +2663,7 @@ function workData_(user) {
     out.prices = readTable_('Part Prices').map(iso);
     out.suppliers = readTable_('Suppliers').map(iso);
   }
+  if (can_(user, 'project.create')) out.suggestions = readTable_('Project Suggestions').filter(function (x) { return x.status === 'new'; }).map(iso);
   if (can_(user, 'project.view')) {
     out.projects = readTable_('Projects').map(iso);
     out.projectEvents = readTable_('Project Events').map(iso);
@@ -2979,4 +2999,145 @@ function ensureMailTasks_() {
     return m[1] === 'UNANS' ? lastOut > lastIn : lastIn > lastOut;
   }, 'Mailbox', 'Answered');
   return made;
+}
+
+// ═════════════════════════════ Ongoing jobs found automatically (Project Tracker + mail) ═════════════════════════════
+
+function isoRow_(r) { const o = {}; Object.keys(r).forEach(function (k) { o[k] = r[k] instanceof Date ? r[k].toISOString() : r[k]; }); return o; }
+
+/** "2026-02-11", 11/02/2026, 9/2/2026 (Site visit), Date → Date or null */
+function looseDate_(v) {
+  if (v instanceof Date) return isNaN(v) ? null : v;
+  const t = String(v || '');
+  let m = /(20\d\d)-(\d{1,2})-(\d{1,2})/.exec(t);
+  if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Math.min(Number(m[3]), 28));
+  m = /(\d{1,2})\/(\d{1,3})\/(20\d\d)/.exec(t);
+  if (m) { let a = Number(m[1]), b = Number(m[2]); if (a > 12) { const x = a; a = b; b = x; } return new Date(Number(m[3]), Math.min(Math.max(a, 1), 12) - 1, Math.min(Math.max(b, 1), 28)); }
+  return null;
+}
+
+/** Rows of the tracker's "Quote & Lead follow up" tab → suggested projects. */
+function trackerSuggestions_(values, url) {
+  const hi = values.findIndex(function (r) { return r.some(function (c) { return /proposal\s*sent/i.test(String(c)); }); });
+  if (hi < 0) return [];
+  const head = values[hi].map(function (h) { return String(h).replace(/\s+/g, ' ').trim(); });
+  const col = function (re) { return head.findIndex(function (h) { return re.test(h); }); };
+  const C = { job: col(/^job/i), contact: col(/contact/i), type: col(/client type/i), loc: col(/location/i), inq: col(/inquiry/i),
+              prop: col(/proposal sent/i), acc: col(/accepted/i), quote: col(/quote/i), next: col(/next step/i), win: col(/win/i), note: col(/^note/i) };
+  const since = Date.now() - 365 * 86400000;
+  const out = [];
+  values.slice(hi + 1).forEach(function (r) {
+    const name = String(r[C.job] || '').replace(/\s+/g, ' ').trim();
+    const num = (/#?\s*(\d{3,5})/.exec(name) || [])[1];
+    if (!num) return;
+    const win = String(C.win >= 0 ? r[C.win] : '').trim().toUpperCase();
+    if (win === 'N') return;                                            // marked lost
+    const inq = looseDate_(r[C.inq]), prop = looseDate_(r[C.prop]), acc = looseDate_(r[C.acc]);
+    const latest = [inq, prop, acc].filter(Boolean).reduce(function (a, b) { return a > b ? a : b; }, null);
+    if (!latest || latest.getTime() < since) return;
+    const title = name.replace(/^#?\s*\d{3,5}\s*[_\-\s]*/, '').replace(/_/g, ' ').replace(/\s+/g, ' ').trim() || name;
+    // Job names carry a code: N_INS / INST / RN / MOD = installation or modernization; repair / decommission / service call = repair.
+    const type = /\b(N[_\s-]?INS|INST|INS|RN|MOD)\b/i.test(name) ? 'INS' : /repair|decommission|service call/i.test(name) ? 'REP' : 'INS';
+    const won = win === 'Y' || !!acc;
+    out.push({
+      ref: 'PT#' + num + (out.some(function (x) { return x.ref === 'PT#' + num; }) ? '-' + (out.length + 1) : ''), source: 'Project Tracker',
+      title: '#' + num + ' ' + title, type_id: type, segment_id: /^r/i.test(String(r[C.type] || '').trim()) ? 'RES' : 'COM',
+      site_name: String(r[C.loc] || '').replace(/\s+/g, ' ').trim(), contact: String(r[C.contact] || '').replace(/\s+/g, ' ').trim().slice(0, 300),
+      value: money_(r[C.quote]), inquiry_date: inq ? day_(inq) : '', proposal_date: prop ? day_(prop) : '', accepted_date: acc ? day_(acc) : '',
+      next_steps: String(r[C.next] || r[C.note] || '').replace(/\s+/g, ' ').trim().slice(0, 300), link: url || '',
+      stage: won ? (type === 'REP' ? 'Parts ordered' : 'Customer confirmed · deposit') : prop ? 'Waiting for reply' : (type === 'REP' ? 'Request received' : 'Lead screening'),
+    });
+  });
+  return out;
+}
+
+/** Mail conversations about quotes / installs / repairs that are not filed under a project yet. */
+function mailSuggestions_() {
+  const linked = {};
+  readTable_('Mail').forEach(function (m) { if (m.linked_type === 'project' || m.status === 'ignored') linked[m.thread_id] = true; });
+  const boxes = {};
+  readTable_('Mailboxes').forEach(function (b) { boxes[norm_(b.mailbox)] = b; });
+  const since = Date.now() - 60 * 86400000;
+  return readTable_('Mail Threads').filter(function (t) {
+    return !linked[t.thread_id] && /quote|installation|inspection/i.test(String(t.categories)) && new Date(t.updated_at).getTime() > since;
+  }).map(function (t) {
+    const rep = /repair|replace|fix|broken|not working/i.test(String(t.subject));
+    const sales = /sales/i.test(String((boxes[norm_(t.mailbox)] || {}).purpose));
+    return { ref: 'MAIL#' + t.thread_id, source: 'Mail (' + t.mailbox + ')', title: String(t.subject || '(no subject)').replace(/^(re|fwd?):\s*/i, ''),
+             type_id: rep ? 'REP' : 'INS', segment_id: 'COM', site_name: t.site_name || '', contact: t.counterpart || '', value: '',
+             inquiry_date: t.first_at ? day_(new Date(t.first_at)) : '', proposal_date: '', accepted_date: '', link: t.link,
+             next_steps: t.waiting_on === 'them' ? 'We wrote last — waiting for the customer' : 'Customer wrote last — needs an answer',
+             stage: t.waiting_on === 'them' && sales ? 'Waiting for reply' : (rep ? 'Request received' : 'Lead screening') };
+  });
+}
+
+/** Rewrites the suggestion list, keeping added / dismissed status. Call while holding the lock. */
+function rebuildSuggestions_(trackerTabs) {
+  const sh = SpreadsheetApp.getActive().getSheetByName('Project Suggestions');
+  if (!sh) return 0;
+  const old = {};
+  readTable_('Project Suggestions').forEach(function (r) { old[r.ref] = r; });
+  const projects = readTable_('Projects');
+  const taken = {};
+  projects.forEach(function (p) { if (p.source_ref) taken[p.source_ref] = p.project_id; });
+  let fresh = [];
+  (trackerTabs || []).forEach(function (t) { fresh = fresh.concat(trackerSuggestions_(t.values, t.url)); });
+  if (!(trackerTabs || []).length) fresh = Object.keys(old).map(function (k) { return old[k]; }).filter(function (r) { return /^PT#/.test(r.ref); });
+  fresh = fresh.concat(mailSuggestions_());
+  const head = headersOf_('Project Suggestions');
+  let added = 0;
+  const rows = fresh.map(function (x) {
+    const o = old[x.ref];
+    const rec = Object.assign({}, x, { status: taken[x.ref] ? 'added' : (o ? o.status : 'new'), project_id: taken[x.ref] || (o ? o.project_id : ''), updated_at: new Date() });
+    if (!o && rec.status === 'new') added++;
+    return head.map(function (h) { return rec[h] === undefined ? '' : rec[h]; });
+  });
+  // keep dismissed / added rows that no longer show up, so they are never suggested again
+  Object.keys(old).forEach(function (k) {
+    if (fresh.some(function (x) { return x.ref === k; }) || old[k].status === 'new') return;
+    rows.push(head.map(function (h) { return old[k][h] === undefined ? '' : old[k][h]; }));
+  });
+  if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, head.length).clearContent();
+  if (rows.length) sh.getRange(2, 1, rows.length, head.length).setValues(rows);
+  return added;
+}
+
+/** p.items = [{ref, stage, type_id, segment_id}] — adds each as a project at the step chosen (no Drive folder yet). */
+function acceptSuggestions_(user, p) {
+  return withLock_(function () {
+    const all = readTable_('Project Suggestions');
+    const types = readTable_('Project Types');
+    const made = [];
+    (p.items || []).slice(0, 100).forEach(function (it) {
+      const sg = all.filter(function (x) { return x.ref === it.ref && x.status === 'new'; })[0];
+      if (!sg) return;
+      const typeId = it.type_id || sg.type_id, seg = it.segment_id || sg.segment_id || 'COM';
+      const type = types.filter(function (t) { return t.type_id === typeId; })[0];
+      if (!type) return;
+      const names = projectStages_(typeId, seg).map(function (x) { return x.stage; });
+      const stage = names.indexOf(it.stage) >= 0 ? it.stage : (names.indexOf(sg.stage) >= 0 ? sg.stage : names[0]);
+      const site = siteForText_(sg.site_name);
+      const past = names.indexOf(stage) > names.findIndex(function (n, i) { return String(projectStages_(typeId, seg)[i].form) === 'scope'; });
+      const rec = {
+        project_id: nextId_('Projects', 'project_id', String(type.id_prefix || type.type_id), 3), type_id: typeId, segment_id: seg,
+        site_id: site ? site.site_id : '', title: clean_(sg.title, 200), status: 'open', owner_email: user.email, folder_id: '', folder_url: '',
+        created_at: new Date(), created_by: user.email, notes: [sg.source, sg.next_steps, sg.link].filter(String).join(' · '),
+        stage: stage, stage_at: new Date(), site_name: sg.site_name, addr_key: addrKey_(sg.site_name), customer: '', contact: sg.contact,
+        value: sg.value, updated_at: new Date(), source_ref: sg.ref,
+        scope: past ? 'Quoted before the OA (' + sg.source + ')' : '', scope_by: past ? user.email : '', scope_at: past ? new Date() : '',
+      };
+      appendRecord_('Projects', rec);
+      appendRecord_('Project Events', { project_id: rec.project_id, at: new Date(), stage: stage, by: user.email,
+        note: 'Added from ' + sg.source + (sg.proposal_date ? ' · quote sent ' + sg.proposal_date : sg.inquiry_date ? ' · enquiry ' + sg.inquiry_date : '') });
+      if (/^MAIL#/.test(sg.ref)) {
+        const thread = sg.ref.slice(5);
+        readTable_('Mail').forEach(function (m) { if (m.thread_id === thread) linkMailRow_(m.mail_id, 'project', rec.project_id); });
+      }
+      ensureStepTask_(rec);
+      updateRecord_('Project Suggestions', 'ref', sg.ref, { status: 'added', project_id: rec.project_id, updated_at: new Date() });
+      made.push(rec.project_id);
+    });
+    audit_(user.email, 'project.import', made.join(','), made.length + ' projects from suggestions');
+    return { added: made };
+  });
 }
