@@ -54,6 +54,9 @@ const SEED = {
       ['PROJECT_REMINDER_ROLES', 'office', 'Who gets project follow-up reminders (e.g. quote sent 7 days ago)'],
       ['MAIL_LOOKBACK_DAYS', '3', 'The mailbox collector looks at mail from the last N days each run (already-saved mail is skipped)'],
       ['MAIL_KEEP_DAYS_IN_OA', '120', 'The OA page shows mail records from the last N days (older ones stay in the Mail tab)'],
+      ['CRM_LIFECYCLE', 'Lead|Opportunity|Customer|Past customer|Other', 'CRM lifecycle stages, in order, separated by |'],
+      ['CRM_COMPANY_TYPES', 'Property manager|Building owner|General contractor|Architect / consultant|Condo corporation|Homeowner|Supplier|Other', 'CRM company types, separated by |'],
+      ['CRM_IMPORT', 'TRUE', 'TRUE = the hourly sync adds contacts and companies from the Project Tracker, Sites and residential maintenance (never overwrites what you typed)'],
     ],
   },
   'Roles': {
@@ -91,6 +94,8 @@ const SEED = {
       ['project.view', 'See installation / repair projects and their steps', true, true, true, true, false, true],
       ['project.edit', 'Move projects through their steps and edit them', true, true, false, true, false, true],
       ['mail.view', 'See mail records collected from connected mailboxes (Kyle has agreed to his)', true, false, false, true, false, true],
+      ['crm.view', 'See CRM contacts, companies, notes and deals', true, true, true, true, true, true],
+      ['crm.edit', 'Add and edit CRM contacts and companies, write notes, link them to sites and projects', true, true, false, true, false, true],
     ],
   },
   'Users': {
@@ -381,6 +386,27 @@ const SEED = {
           'Do not edit here; Kyle can copy cells from this tab into the company sheet.',
     rows: [],
   },
+  'CRM Companies': {
+    headers: ['company_id', 'name', 'type', 'lifecycle', 'phone', 'email', 'domain', 'address', 'city', 'owner', 'notes',
+              'source', 'source_ref', 'created_at', 'created_by', 'updated_at', 'archived', 'archived_at', 'archived_by'],
+    widths: [90, 240, 150, 110, 130, 220, 160, 260, 110, 200, 300, 140, 160, 150, 200, 150, 70, 150, 200],
+    note: 'CRM companies. owner = the email of the person looking after them. Removing one in the OA only sets archived = TRUE.', rows: [],
+  },
+  'CRM Contacts': {
+    headers: ['contact_id', 'first_name', 'last_name', 'email', 'phone', 'mobile', 'job_title', 'company_id', 'lifecycle', 'owner',
+              'address', 'notes', 'source', 'source_ref', 'created_at', 'created_by', 'updated_at', 'archived', 'archived_at', 'archived_by'],
+    widths: [90, 120, 140, 220, 130, 130, 150, 90, 110, 200, 260, 300, 140, 160, 150, 200, 150, 70, 150, 200],
+    note: 'CRM contacts. company_id = their company in CRM Companies. Removing one in the OA only sets archived = TRUE.', rows: [],
+  },
+  'CRM Notes': {
+    headers: ['note_id', 'object_type', 'object_id', 'text', 'by', 'at'],
+    widths: [110, 90, 100, 520, 200, 150], rows: [],
+  },
+  'CRM Links': {
+    headers: ['a_type', 'a_id', 'b_type', 'b_id', 'by', 'at', 'source'],
+    widths: [80, 110, 80, 130, 200, 150, 140],
+    note: 'Which contact / company belongs to which site or project. a_type = contact or company; b_type = site or project.', rows: [],
+  },
   'Audit Log': {
     headers: ['time', 'email', 'action', 'target', 'detail'],
     widths: [150, 220, 160, 180, 460], rows: [],
@@ -397,7 +423,7 @@ const README = [
   ['这是什么', 'Krysnor 内部 OA 的唯一数据来源。员工不直接改这张表，只通过 OA 网页操作。只有 Kaixin 在这里修改。'],
   ['', ''],
   ['Config tabs (you edit)', 'Settings · Roles · Permissions · Users · Segments · Project Types · Folder Templates · Call Types'],
-  ['Record tabs (system writes)', 'Sites · Units · Projects · Service Reports · Audit Log · Backup Log'],
+  ['Record tabs (system writes)', 'Sites · Units · Projects · Service Reports · CRM Companies · CRM Contacts · CRM Notes · CRM Links · Audit Log · Backup Log'],
   ['', ''],
   ['Add a technician', 'Users → add a row: email, name, role_ids = technician, active = TRUE. Nothing else to change.'],
   ['新增技师', 'Users 表加一行：邮箱、名字、role_ids 填 technician、active 填 TRUE。其他不用改。'],
@@ -427,7 +453,7 @@ const BACKUP_NAME_PREFIX = 'Krysnor OA Master backup ';
 const TEXT_COLUMNS = ['report_id', 'project_id', 'site_id', 'unit_id', 'arrived', 'left', 'contact_phone', 'phone', 'task_id', 'ref_id',
                       'installation_no', 'scheduled_week', 'contract_expiry',
                       'client_id', 'amends_report_id', 'folder_id', 'file_id', 'order_id', 'price_id', 'part_no', 'mail_id',
-                      'thread_id', 'quote_ref', 'key', 'month', 'ready_date', 'date', 'date_value', 'due_months', 'due_months_override', 'done_months', 'event_id', 'payment_plan', 'template_id', 'ref', 'source_ref',
+                      'thread_id', 'quote_ref', 'key', 'contact_id', 'company_id', 'note_id', 'mobile', 'a_id', 'b_id', 'object_id', 'month', 'ready_date', 'date', 'date_value', 'due_months', 'due_months_override', 'done_months', 'event_id', 'payment_plan', 'template_id', 'ref', 'source_ref',
                       'inquiry_date', 'proposal_date', 'accepted_date'];
 
 // ───────────────────────────── Setup ─────────────────────────────
@@ -1103,6 +1129,16 @@ const ACTIONS = {
     run: function (user, p) { return confirmScope_(user, p); },
   },
   linkMail: { permission: 'mail.view', run: function (user, p) { return linkMail_(user, p); } },
+  crm: { permission: 'crm.view', run: function (user) { return crmData_(user); } },
+  crmSave: { permission: 'crm.edit', run: function (user, p) { return crmSave_(user, p); } },
+  crmNote: { permission: 'crm.edit', run: function (user, p) { return crmNote_(user, p); } },
+  crmLink: { permission: 'crm.edit', run: function (user, p) { return crmLink_(user, p); } },
+  crmArchive: { permission: 'crm.edit', run: function (user, p) { return crmArchive_(user, p); } },
+  crmImport: {
+    // Reads the Project Tracker first (slow) without the lock, then writes under the lock for a moment.
+    permission: 'crm.edit',
+    run: function (user) { const tabs = crmTrackerTabs_(); return withLock_(function () { const r = crmImport_(tabs); audit_(user.email, 'crm.import', '', JSON.stringify(r)); return r; }); },
+  },
   invoices: { permission: 'view.all', run: function (user) { return invoicesFor_(user); } },
   editTime: {
     // Only the admin (Kaixin) can correct a recorded time. Every change is written to the Audit Log with the old value.
@@ -1587,6 +1623,7 @@ function syncSources() {
         report.push('Sites: ' + res.added + ' added, ' + res.updated + ' updated, ' + res.units + ' units added; maintenance log ' + log.rows.length + ' rows');
         const planRows = writeMaintenancePlan_(maintenancePlan_(contractsByYear, year), year);
         try { report.push('Project suggestions: ' + rebuildSuggestions_(trackerQuotes) + ' new'); } catch (err) { report.push('Project suggestions FAILED: ' + err.message); }
+        try { if (String(settings.CRM_IMPORT || 'TRUE').toUpperCase() !== 'FALSE') { const ci = crmImport_(trackerQuotes); report.push('CRM: ' + ci.contacts + ' contacts, ' + ci.companies + ' companies, ' + ci.links + ' links added'); } } catch (err) { report.push('CRM import FAILED: ' + err.message); }
         const mt = ensureMonthTasks_();
         report.push('Maintenance plan ' + planRows + ' sites; ' + mt.month + ': ' + mt.created + ' new reminders, ' + mt.closed + ' ticked off from the record');
       } catch (err) {
@@ -3140,4 +3177,366 @@ function acceptSuggestions_(user, p) {
     audit_(user.email, 'project.import', made.join(','), made.length + ' projects from suggestions');
     return { added: made };
   });
+}
+
+
+// ═════════════════════════════ CRM: contacts, companies, notes, links (HubSpot-style; no call / email tracking) ═════════════════════════════
+
+const CRM_FIELDS = {
+  contact: ['first_name', 'last_name', 'email', 'phone', 'mobile', 'job_title', 'company_id', 'lifecycle', 'owner', 'address', 'notes'],
+  company: ['name', 'type', 'lifecycle', 'phone', 'email', 'domain', 'address', 'city', 'owner', 'notes'],
+};
+const CRM_TAB = { contact: 'CRM Contacts', company: 'CRM Companies' };
+const CRM_ID = { contact: 'contact_id', company: 'company_id' };
+const CRM_DEFAULT_LIFECYCLE = 'Lead|Opportunity|Customer|Past customer|Other';
+const CRM_DEFAULT_TYPES = 'Property manager|Building owner|General contractor|Architect / consultant|Condo corporation|Homeowner|Supplier|Other';
+
+function crmSplit_(v, fallback) { return String(v || fallback).split('|').map(function (x) { return x.trim(); }).filter(String); }
+function crmType_(t) { if (t !== 'contact' && t !== 'company') throw new Error('Unknown CRM record type: ' + t); return t; }
+/** "Button LTD." and "Button Ltd" are the same company. */
+function crmCompanyKey_(name) {
+  return String(name || '').toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\b(ltd|limited|inc|incorporated|corp|corporation|co|company|the)\b/g, ' ').replace(/\s+/g, ' ').trim();
+}
+/** Ten digits of a North American phone number (no country code, no extension), or ''. */
+function crmDigits_(s) {
+  const m = /(?:\+?1[\s.\-]?)?\(?(\d{3})\)?[\s.\-]?(\d{3})[\s.\-]?(\d{4})/.exec(String(s || ''));
+  return m ? m[1] + m[2] + m[3] : '';
+}
+function crmPhone_(s) {
+  const m = /(?:\+?1[\s.\-]?)?\(?(\d{3})\)?[\s.\-]?(\d{3})[\s.\-]?(\d{4})(\s*(?:x|ext\.?)\s*\d+)?/i.exec(String(s || ''));
+  return m ? m[1] + '-' + m[2] + '-' + m[3] + (m[4] ? ' ' + m[4].trim() : '') : '';
+}
+function crmNum_(rows, col) {
+  return rows.reduce(function (mx, r) { const n = Number(String(r[col] || '').replace(/\D/g, '')) || 0; return Math.max(mx, n); }, 0);
+}
+function crmPad_(prefix, n) { return prefix + ('00000' + n).slice(-5); }
+/** "Josh Demore (Site super)" → { first_name: 'Josh', last_name: 'Demore', job_title: 'Site super' } */
+function crmName_(name) {
+  let t = String(name || '').replace(/\s+/g, ' ').trim(), title = '';
+  const m = /\(([^)]+)\)/.exec(t);
+  if (m) { title = m[1].trim(); t = t.replace(m[0], ' ').replace(/\s+/g, ' ').trim(); }
+  t = t.replace(/^(mr|mrs|ms|miss|dr)\.?\s+/i, '');
+  const parts = t ? t.split(' ') : [];
+  return { first_name: parts[0] || '', last_name: parts.slice(1).join(' '), job_title: title };
+}
+
+/** Free-text contact cell ("Customer: X / Josh Demore / Office: 705… / Cell: … / Email: …") → fields. */
+function parseContactBlock_(text) {
+  const out = { company: '', name: '', email: '', phone: '', mobile: '' };
+  const raw = String(text || '');
+  const emails = raw.match(/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/ig) || [];
+  out.email = (emails[0] || '').toLowerCase();
+  raw.split(/\n|;/).forEach(function (line) {
+    line = line.replace(/\s+/g, ' ').trim();
+    if (!line) return;
+    let m;
+    if ((m = /^(customer|company|client|gc|contractor|management|property manager)\s*[:：]\s*(.*)$/i.exec(line))) { if (!out.company && m[2].trim()) out.company = m[2].trim(); return; }
+    if ((m = /^(name of contact|contact name|contact person|contact|name|attn)\s*[:：]\s*(.*)$/i.exec(line))) { if (!out.name && m[2].trim() && !crmDigits_(m[2])) out.name = m[2].trim(); return; }
+    if ((m = /^(cell|mobile|cell phone|c|m)\s*[:：.]\s*(.*)$/i.exec(line))) { const p = crmPhone_(m[2]); if (p && !out.mobile) out.mobile = p; return; }
+    if ((m = /^(office|tel|phone|o|t|p|work|main)\s*[:：.]\s*(.*)$/i.exec(line))) { const p = crmPhone_(m[2]); if (p && !out.phone) out.phone = p; return; }
+    if (/^e-?mail\s*[:：]/i.test(line) || /@/.test(line)) return;
+    if (/[:：]/.test(line)) return;
+    const ph = crmPhone_(line);
+    if (ph) { if (!out.phone) out.phone = ph; else if (!out.mobile && ph !== out.phone) out.mobile = ph; return; }
+    if (!out.name && /^[A-Za-z][A-Za-z .'\-()]{1,60}$/.test(line)) out.name = line;
+  });
+  return out;
+}
+
+function crmData_(user) {
+  const live = function (r) { return !isTrue_(r.archived); };
+  const s = getSettings_();
+  return {
+    companies: readTable_('CRM Companies').filter(live).map(isoRow_),
+    contacts: readTable_('CRM Contacts').filter(live).map(isoRow_),
+    notes: readTable_('CRM Notes').map(isoRow_),
+    links: readTable_('CRM Links').map(isoRow_),
+    lifecycle: crmSplit_(s.CRM_LIFECYCLE, CRM_DEFAULT_LIFECYCLE),
+    companyTypes: crmSplit_(s.CRM_COMPANY_TYPES, CRM_DEFAULT_TYPES),
+    owners: readTable_('Users').filter(function (u) { return isTrue_(u.active) && u.email; })
+      .map(function (u) { return { email: norm_(u.email), name: String(u.display_name || u.email) }; }),
+    canEdit: can_(user, 'crm.edit'),
+    syncedAt: new Date().toISOString(),
+  };
+}
+
+function crmClean_(type, record) {
+  const rec = {};
+  Object.keys(record || {}).forEach(function (k) {
+    if (CRM_FIELDS[type].indexOf(k) >= 0) rec[k] = clean_(record[k], k === 'notes' ? 5000 : 300);
+  });
+  if (rec.email !== undefined) {
+    rec.email = rec.email.toLowerCase();
+    if (rec.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rec.email)) throw new Error('"' + rec.email + '" is not an email address.');
+  }
+  if (rec.owner !== undefined) rec.owner = rec.owner.toLowerCase();
+  if (rec.lifecycle) {
+    const ok = crmSplit_(getSettings_().CRM_LIFECYCLE, CRM_DEFAULT_LIFECYCLE);
+    if (ok.indexOf(rec.lifecycle) < 0) throw new Error('Lifecycle stage must be one of: ' + ok.join(', '));
+  }
+  if (rec.company_id && !readTable_('CRM Companies').some(function (c) { return c.company_id === rec.company_id; })) throw new Error('Company ' + rec.company_id + ' does not exist.');
+  return rec;
+}
+
+/** Create (no id) or update (id) a contact / company. Creating one that was removed earlier brings it back. */
+function crmSave_(user, p) {
+  const type = crmType_(p.object);
+  const rec = crmClean_(type, p.record);
+  const tab = CRM_TAB[type], idc = CRM_ID[type];
+  return withLock_(function () {
+    const all = readTable_(tab);
+    const id = String(p.id || '').trim();
+    const same = function (r) {
+      if (type === 'company') return rec.name !== undefined && crmCompanyKey_(r.name) && crmCompanyKey_(r.name) === crmCompanyKey_(rec.name);
+      return rec.email && norm_(r.email) === rec.email;
+    };
+    if (id) {
+      const cur = all.filter(function (r) { return String(r[idc]) === id; })[0];
+      if (!cur) throw new Error(id + ' does not exist.');
+      const clash = all.filter(function (r) { return String(r[idc]) !== id && !isTrue_(r.archived) && same(r); })[0];
+      if (clash) throw new Error('Another ' + type + ' already has this ' + (type === 'company' ? 'name' : 'email') + ' (' + clash[idc] + ').');
+      if (type === 'company' && rec.name === '') throw new Error('A company needs a name.');
+      rec.updated_at = new Date();
+      const out = updateRecord_(tab, idc, id, rec);
+      audit_(user.email, 'crm.' + type + '.edit', id, Object.keys(rec).filter(function (k) { return k !== 'updated_at'; }).join(', '));
+      return { record: isoRow_(out) };
+    }
+    if (type === 'company' && !rec.name) throw new Error('A company needs a name.');
+    if (type === 'contact' && !(rec.first_name || rec.last_name || rec.email || rec.phone || rec.mobile)) throw new Error('Give the contact a name, an email or a phone number.');
+    const dup = all.filter(same)[0];
+    if (dup && !isTrue_(dup.archived)) throw new Error('This ' + type + ' is already in the CRM (' + dup[idc] + ').');
+    let out, restored = false;
+    if (dup) {
+      const f = {}; Object.keys(rec).forEach(function (k) { if (rec[k] !== '') f[k] = rec[k]; });
+      out = updateRecord_(tab, idc, dup[idc], Object.assign(f, { archived: false, archived_at: '', archived_by: '', updated_at: new Date() }));
+      restored = true;
+    } else {
+      out = Object.assign({}, rec, { lifecycle: rec.lifecycle || 'Lead', source: 'OA', created_at: new Date(), created_by: user.email, updated_at: new Date(), archived: false });
+      out[idc] = crmPad_(type === 'contact' ? 'CT' : 'CO', crmNum_(all, idc) + 1);
+      appendRecord_(tab, out);
+    }
+    if (p.link && p.link.type && p.link.id) crmLinkCore_(user, { a_type: type, a_id: out[idc], b_type: p.link.type, b_id: p.link.id });
+    audit_(user.email, 'crm.' + type + (restored ? '.restore' : '.create'), out[idc], type === 'company' ? out.name : [out.first_name, out.last_name, out.email].join(' '));
+    return { record: isoRow_(out), restored: restored };
+  });
+}
+
+function crmExists_(type, id) {
+  if (type === 'contact' || type === 'company') return readTable_(CRM_TAB[type]).some(function (r) { return String(r[CRM_ID[type]]) === String(id); });
+  if (type === 'site') return readTable_('Sites').some(function (r) { return String(r.site_id) === String(id); });
+  if (type === 'project') return readTable_('Projects').some(function (r) { return String(r.project_id) === String(id); });
+  return false;
+}
+
+function crmNote_(user, p) {
+  const type = crmType_(p.object_type);
+  const text = clean_(p.text, 5000);
+  if (!text) throw new Error('Write something in the note.');
+  if (!crmExists_(type, p.object_id)) throw new Error(p.object_id + ' does not exist.');
+  return withLock_(function () {
+    const note = { note_id: 'N' + Utilities.getUuid().replace(/-/g, '').slice(0, 10), object_type: type, object_id: String(p.object_id), text: text, by: user.email, at: new Date() };
+    appendRecord_('CRM Notes', note);
+    return { note: isoRow_(note) };
+  });
+}
+
+/** Link (or with remove: true, unlink) a contact / company and a site / project. */
+function crmLink_(user, p) { return withLock_(function () { return crmLinkCore_(user, p); }); }
+function crmLinkCore_(user, p) {
+  const aT = crmType_(p.a_type), bT = String(p.b_type || '');
+  if (bT !== 'site' && bT !== 'project') throw new Error('Link to a site or a project.');
+  const aId = String(p.a_id || ''), bId = String(p.b_id || '');
+  const sh = SpreadsheetApp.getActive().getSheetByName('CRM Links');
+  const rows = readTable_('CRM Links');
+  const match = function (l) { return l.a_type === aT && String(l.a_id) === aId && l.b_type === bT && String(l.b_id) === bId; };
+  if (p.remove) {
+    for (let i = rows.length - 1; i >= 0; i--) if (match(rows[i])) sh.deleteRow(i + 2);
+    audit_(user.email, 'crm.unlink', aId, bT + ' ' + bId);
+    return { removed: true };
+  }
+  if (!crmExists_(aT, aId)) throw new Error(aId + ' does not exist.');
+  if (!crmExists_(bT, bId)) throw new Error(bT + ' ' + bId + ' does not exist.');
+  if (rows.some(match)) return { link: null, already: true };
+  const link = { a_type: aT, a_id: aId, b_type: bT, b_id: bId, by: user.email, at: new Date(), source: 'OA' };
+  appendRecord_('CRM Links', link);
+  return { link: isoRow_(link) };
+}
+
+function crmArchive_(user, p) {
+  const type = crmType_(p.object);
+  return withLock_(function () {
+    const f = p.restore ? { archived: false, archived_at: '', archived_by: '' } : { archived: true, archived_at: new Date(), archived_by: user.email };
+    const out = updateRecord_(CRM_TAB[type], CRM_ID[type], String(p.id), f);
+    audit_(user.email, 'crm.' + type + (p.restore ? '.restore' : '.archive'), String(p.id), clean_(p.reason, 300));
+    return { record: isoRow_(out) };
+  });
+}
+
+/** The "Quote & Lead follow up" tabs of the company Project Tracker (for the CRM import button). */
+function crmTrackerTabs_() {
+  const src = readTable_('Data Sources').filter(function (x) { return String(x.source_id) === 'TRACKER' && isTrue_(x.active); })[0];
+  if (!src) return [];
+  const book = openSource_(String(src.file_id).trim());
+  const out = [];
+  book.ss.getSheets().forEach(function (sh) { if (/quote.*lead/i.test(sh.getName())) out.push({ values: sh.getDataRange().getValues(), url: book.url }); });
+  return out;
+}
+
+/**
+ * Adds contacts and companies found in the Project Tracker, Sites and residential maintenance, and links them to
+ * sites and projects. Only adds and fills blank fields: never overwrites what someone typed, never brings back
+ * a removed record. Call while holding the write lock.
+ */
+function crmImport_(trackerTabs) {
+  const now = new Date();
+  const RANK = ['Lead', 'Opportunity', 'Customer'];
+  const companies = readTable_('CRM Companies'), contacts = readTable_('CRM Contacts');
+  const compByKey = {}, byEmail = {}, byPhone = {}, byName = {};
+  companies.forEach(function (c) { const k = crmCompanyKey_(c.name); if (k && !compByKey[k]) compByKey[k] = c; });
+  // A name alone only matches when it has a first and a last name (two different "Jennifer"s stay apart).
+  const nameKey = function (c) { if (!String(c.first_name || '').trim() || !String(c.last_name || '').trim()) return ''; return norm_(c.first_name + ' ' + c.last_name).replace(/\s+/g, ' ') + '|' + (c.company_id || ''); };
+  // Same tracker job + same name = same person (for contacts with only a first name and nothing else).
+  const bySrc = {};
+  const srcKey = function (c) { const n = norm_([c.first_name, c.last_name].join(' ')).replace(/\s+/g, ' '); return n && c.source_ref ? c.source_ref + '|' + n : ''; };
+  const index = function (c) {
+    if (c.email && !byEmail[norm_(c.email)]) byEmail[norm_(c.email)] = c;
+    [c.phone, c.mobile].forEach(function (ph) { const d = crmDigits_(ph); if (d && !byPhone[d]) byPhone[d] = c; });
+    const n = nameKey(c); if (n && !byName[n]) byName[n] = c;
+    const sk = srcKey(c); if (sk && !bySrc[sk]) bySrc[sk] = c;
+  };
+  contacts.forEach(index);
+  const linkSet = {};
+  readTable_('CRM Links').forEach(function (l) { linkSet[[l.a_type, l.a_id, l.b_type, l.b_id].join('|')] = true; });
+  const newCo = [], newCt = [], newLinks = [], fills = { company: {}, contact: {} };
+  let coNum = crmNum_(companies, 'company_id'), ctNum = crmNum_(contacts, 'contact_id');
+
+  const fill = function (type, rec, f) {
+    const ch = {};
+    Object.keys(f).forEach(function (k) {
+      if (CRM_FIELDS[type].indexOf(k) < 0 || !f[k]) return;
+      if (k === 'lifecycle') {
+        const was = String(rec.lifecycle || '');
+        if (!was || (RANK.indexOf(was) >= 0 && RANK.indexOf(f[k]) > RANK.indexOf(was))) ch[k] = f[k];
+      } else if (String(rec[k] === undefined ? '' : rec[k]).trim() === '') ch[k] = f[k];
+    });
+    if (!Object.keys(ch).length) return;
+    Object.assign(rec, ch);
+    if (!rec.__new) fills[type][rec[CRM_ID[type]]] = Object.assign(fills[type][rec[CRM_ID[type]]] || {}, ch);
+  };
+  const company = function (name, f) {
+    name = String(name || '').replace(/\s+/g, ' ').trim();
+    const k = crmCompanyKey_(name);
+    if (!k || name.length > 120) return null;
+    let c = compByKey[k];
+    if (c) { fill('company', c, f); return c; }
+    c = Object.assign({ name: name, created_at: now, created_by: 'import', updated_at: now, archived: false, __new: true }, f);
+    c.company_id = crmPad_('CO', ++coNum);
+    newCo.push(c); compByKey[k] = c;
+    return c;
+  };
+  const contact = function (info, f) {
+    const email = norm_(info.email), ph = crmDigits_(info.phone), mob = crmDigits_(info.mobile);
+    const nk = nameKey(info), sk = srcKey({ first_name: info.first_name, last_name: info.last_name, source_ref: f.source_ref });
+    let c = (email && byEmail[email]) || (ph && byPhone[ph]) || (mob && byPhone[mob]) || (nk && byName[nk]) || (sk && bySrc[sk]);
+    const all = Object.assign({}, info, f);
+    if (c) { fill('contact', c, all); return c; }
+    if (!(info.first_name || info.last_name || email || ph || mob)) return null;
+    c = Object.assign({ created_at: now, created_by: 'import', updated_at: now, archived: false, __new: true }, all);
+    c.contact_id = crmPad_('CT', ++ctNum);
+    newCt.push(c); index(c);
+    return c;
+  };
+  const link = function (aT, a, bT, bId) {
+    if (!a || !bId) return;
+    const key = [aT, a[CRM_ID[aT]], bT, bId].join('|');
+    if (linkSet[key]) return;
+    linkSet[key] = true;
+    newLinks.push({ a_type: aT, a_id: a[CRM_ID[aT]], b_type: bT, b_id: bId, by: 'import', at: now, source: 'import' });
+  };
+
+  const projects = readTable_('Projects');
+  const projByRef = {};
+  projects.forEach(function (p) { if (p.source_ref) projByRef[String(p.source_ref).replace(/-\d+$/, '')] = p; });
+  const sites = readTable_('Sites').filter(function (x) { return !isTrue_(x.archived); });
+
+  // 1. Project Tracker: every job ever quoted (the customer, the contact person, phones, email).
+  (trackerTabs || []).forEach(function (t) {
+    const values = t.values || [];
+    const hi = values.findIndex(function (r) { return r.some(function (c) { return /proposal\s*sent/i.test(String(c)); }); });
+    if (hi < 0) return;
+    const head = values[hi].map(function (h) { return String(h).replace(/\s+/g, ' ').trim(); });
+    const col = function (re) { return head.findIndex(function (h) { return re.test(h); }); };
+    const C = { job: col(/^job/i), contact: col(/contact/i), type: col(/client type/i), loc: col(/location/i), prop: col(/proposal sent/i), acc: col(/accepted/i), win: col(/win/i) };
+    values.slice(hi + 1).forEach(function (r) {
+      const job = String(r[C.job] || '').replace(/\s+/g, ' ').trim();
+      const num = (/#?\s*(\d{3,5})/.exec(job) || [])[1];
+      if (!num || C.contact < 0) return;
+      const b = parseContactBlock_(r[C.contact]);
+      const res = /^r/i.test(String(C.type >= 0 ? r[C.type] : '').trim());
+      const win = String(C.win >= 0 ? r[C.win] : '').trim().toUpperCase();
+      const life = win === 'Y' || (C.acc >= 0 && looseDate_(r[C.acc])) ? 'Customer' : (C.prop >= 0 && looseDate_(r[C.prop])) ? 'Opportunity' : 'Lead';
+      const ref = 'PT#' + num;
+      const loc = String(C.loc >= 0 ? r[C.loc] : '').replace(/\s+/g, ' ').trim();
+      let personName = b.name;
+      if (res && !personName && b.company) personName = b.company;
+      const co = res ? null : company(b.company, { lifecycle: life, source: 'Project Tracker', source_ref: ref });
+      const nm = crmName_(personName);
+      const ct = contact({ first_name: nm.first_name, last_name: nm.last_name, job_title: nm.job_title, email: b.email, phone: b.phone, mobile: b.mobile,
+                           company_id: co ? co.company_id : '' }, { lifecycle: life, source: 'Project Tracker', source_ref: ref, address: res ? loc : '' });
+      const pr = projByRef[ref];
+      if (pr) { link('company', co, 'project', pr.project_id); link('contact', ct, 'project', pr.project_id); }
+      const site = loc ? siteForText_(loc, sites) : null;
+      if (site) { link('company', co, 'site', site.site_id); link('contact', ct, 'site', site.site_id); }
+    });
+  });
+
+  // 2. Maintenance sites: the site contact is a customer.
+  sites.forEach(function (s) {
+    const b = parseContactBlock_(s.site_contact);
+    const nm = crmName_(s.contact_name || b.name);
+    const co = b.company ? company(b.company, { lifecycle: 'Customer', source: 'Maintenance Record', source_ref: s.site_id }) : null;
+    const ct = contact({ first_name: nm.first_name, last_name: nm.last_name, job_title: nm.job_title, email: s.contact_email || b.email,
+                         phone: crmPhone_(s.contact_phone) || b.phone, mobile: b.mobile, company_id: co ? co.company_id : '' },
+                       { lifecycle: 'Customer', source: 'Maintenance Record', source_ref: s.site_id });
+    link('company', co, 'site', s.site_id); link('contact', ct, 'site', s.site_id);
+  });
+
+  // 3. Residential maintenance customers.
+  readTable_('Maintenance Plan').filter(function (m) { return String(m.segment).toUpperCase() === 'RES'; }).forEach(function (m) {
+    const nm = crmName_(m.contact_name);
+    const ct = contact({ first_name: nm.first_name, last_name: nm.last_name, job_title: nm.job_title, email: m.contact_email, phone: crmPhone_(m.contact_phone), company_id: '' },
+                       { lifecycle: 'Customer', source: 'Residential maintenance', source_ref: m.address, address: m.address });
+    if (m.site_id) link('contact', ct, 'site', m.site_id);
+  });
+
+  // 4. Projects whose customer / contact text names a CRM company or an email we know.
+  projects.forEach(function (p) {
+    const co = compByKey[crmCompanyKey_(p.customer)];
+    if (p.customer && co && !isTrue_(co.archived)) link('company', co, 'project', p.project_id);
+    (String(p.contact || '').match(/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/ig) || []).forEach(function (e) {
+      const ct = byEmail[e.toLowerCase()];
+      if (ct && !isTrue_(ct.archived)) link('contact', ct, 'project', p.project_id);
+    });
+  });
+
+  // Write: new rows in one go; blank fields filled one record at a time (few after the first run).
+  const append = function (tab, recs) {
+    if (!recs.length) return;
+    const sh = SpreadsheetApp.getActive().getSheetByName(tab);
+    const head = headersOf_(tab);
+    sh.getRange(sh.getLastRow() + 1, 1, recs.length, head.length)
+      .setValues(recs.map(function (r) { return head.map(function (h) { return r[h] === undefined ? '' : r[h]; }); }));
+  };
+  append('CRM Companies', newCo); append('CRM Contacts', newCt); append('CRM Links', newLinks);
+  ['company', 'contact'].forEach(function (type) {
+    const ids = Object.keys(fills[type]);
+    if (!ids.length) return;
+    const tab = CRM_TAB[type], sh = SpreadsheetApp.getActive().getSheetByName(tab), head = headersOf_(tab);
+    const rowOf = {};
+    readTable_(tab).forEach(function (r, i) { rowOf[r[CRM_ID[type]]] = i + 2; });
+    ids.forEach(function (id) { if (rowOf[id]) writeRowFields_(sh, head, rowOf[id], Object.assign(fills[type][id], { updated_at: now })); });
+  });
+  return { companies: newCo.length, contacts: newCt.length, links: newLinks.length,
+           filled: Object.keys(fills.company).length + Object.keys(fills.contact).length };
 }

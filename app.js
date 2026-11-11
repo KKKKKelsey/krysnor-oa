@@ -237,6 +237,7 @@
     $('#tab-invoices').hidden = !(state.invoices && state.invoices.items && state.invoices.items.length) && !can('order.view');
     $('#tab-projects').hidden = !can('project.view');
     $('#tab-mail').hidden = !can('mail.view');
+    $('#tab-crm').hidden = !can('crm.view');
     $('#tab-tables').hidden = !(state.index && state.index.tableCount > 0);
     const chip = $('#user-chip');
     chip.hidden = !signedIn;
@@ -811,6 +812,20 @@
       '<div class="card-meta">' + open + '</div>' +
     '</div>';
   }
+  /** Contacts and companies matching the search (name, email, phone digits), shown above the sheet rows. */
+  function crmSearch(q) {
+    if (!can('crm.view') || !state.crm) return '';
+    const t = q.toLowerCase(), d = q.replace(/\D/g, '');
+    const hit = (txt, ph) => String(txt).toLowerCase().indexOf(t) >= 0 || (d.length >= 4 && String(ph).replace(/\D/g, '').indexOf(d) >= 0);
+    const cos = CRM().companies.filter((c) => hit([c.name, c.email, c.domain].join(' '), c.phone)).slice(0, 5);
+    const cts = CRM().contacts.filter((c) => hit([ctName(c), c.email].join(' '), [c.phone, c.mobile].join(' '))).slice(0, 8);
+    if (!cos.length && !cts.length) return '';
+    return '<section class="group"><h2>CRM <span class="muted">· ' + (cos.length + cts.length) + '</span></h2><div class="crm-hits">' +
+      cos.map((c) => '<a class="crm-chip" href="#/crm/company/' + encodeURIComponent(c.company_id) + '">' + avatar(c.name, 'company') + esc(c.name) + '</a>').join('') +
+      cts.map((c) => '<a class="crm-chip" href="#/crm/contact/' + encodeURIComponent(c.contact_id) + '">' + avatar(ctName(c)) + esc(ctName(c)) +
+        ((coById(c.company_id) || {}).name ? ' <span class="muted">· ' + esc(coById(c.company_id).name) + '</span>' : '') + (c.phone || c.mobile ? ' <span class="muted mono">' + esc(c.phone || c.mobile) + '</span>' : '') + '</a>').join('') +
+      '</div></section>';
+  }
   function renderSearch() {
     const idx = state.index;
     const ready = idx && idx.items;
@@ -830,9 +845,10 @@
       const q = state.search.trim(); const box = $('#s-results');
       if (q.length < 2) { box.innerHTML = '<div class="empty">Type at least 2 characters. Phone numbers work with or without spaces.</div>'; return; }
       const groups = searchItems(q);
-      if (!groups.length) { box.innerHTML = '<div class="empty">Nothing found for “' + esc(q) + '”.</div>'; return; }
+      const crmHits = crmSearch(q);
+      if (!groups.length && !crmHits) { box.innerHTML = '<div class="empty">Nothing found for “' + esc(q) + '”.</div>'; return; }
       const shown = groups.slice(0, 25);
-      box.innerHTML = shown.map((g) => {
+      box.innerHTML = crmHits + shown.map((g) => {
         const head = g.key.charAt(0) === '~' ? '' : (g.items.find((i) => i.addr) || g.items[0]);
         return '<section class="group">' +
           (head ? '<h2>' + esc(head.addr || head.title) + ' <span class="muted">· ' + g.items.length + ' record' + (g.items.length > 1 ? 's' : '') + '</span>' +
@@ -1033,10 +1049,15 @@
   // ═════════ work: This month · Orders · Prices · Projects · Mail ═════════
   const W = () => state.work || {};
   async function loadWork() {
-    try { state.work = await api('work'); await DB.setKv('work', state.work); }
+    try {
+      state.work = await api('work'); await DB.setKv('work', state.work);
+      // Permissions follow the sheet without signing in again (e.g. a new CRM permission).
+      if (state.work.permissions && state.me && state.me.user && !state.me.user.isAdmin) { state.me.user.permissions = state.work.permissions; LS.set('me', state.me); }
+    }
     catch (e) { if (!state.work) { try { state.work = (await DB.getKv('work')) || null; } catch (x) { state.work = null; } } }
     try { state.month = await api('monthChecklist', {}); LS.set('month', state.month); } catch (e) { /* keep the copy on this device */ }
     await loadInvoices();
+    await loadCrm();
   }
   async function loadWorkFromDevice() {
     if (!state.work) { try { state.work = (await DB.getKv('work')) || null; } catch (e) { state.work = null; } }
@@ -1487,6 +1508,7 @@
         (p.value ? '<dt>Value</dt><dd class="mono">' + moneyFmt(p.value) + '</dd>' : '') +
         '<dt>Opened</dt><dd>' + esc(dShort(p.created_at)) + te('Projects', p.project_id, 'created_at', p.created_at) + '</dd>' +
         (p.folder_url ? '<dt>Files</dt><dd><a href="' + esc(p.folder_url) + '" target="_blank" rel="noopener">Drive folder</a></dd>' : '') + '</dl>' +
+      crmProjectHtml(p) +
       flowHtml(names, p.stage, info) +
       (cur && cur.notes ? '<p class="muted">Now: ' + esc(cur.notes) + '</p>' : '') +
       stepBoxHtml(p, cur) +
@@ -1504,6 +1526,7 @@
           (m ? ' · <a href="' + esc(m.link) + '" target="_blank" rel="noopener">email</a>' : '') + '</li>'; }).join('') + '</ol>' +
       (mails.length ? '<h2>Emails · ' + mails.length + '</h2><div class="list">' + mails.map(mailRow).join('') + '</div>' : '');
     bindMailCards(view());
+    bindCrmProject(p);
     bindPlan(p);
     bindStepBox(p, cur);
     const f = $('#ps');
@@ -1752,6 +1775,497 @@
   }
 
   // ───────── router ─────────
+  // ───────── CRM (laid out like HubSpot: contacts, companies, deals — no call / email tracking) ─────────
+  const CRM = () => state.crm || { companies: [], contacts: [], notes: [], links: [], lifecycle: [], companyTypes: [], owners: [], canEdit: false };
+  async function loadCrm() {
+    if (!can('crm.view')) return;
+    if (!state.crm) { try { state.crm = (await DB.getKv('crm')) || null; } catch (e) { state.crm = null; } }
+    if (!online() || !tokenValid()) return;
+    try { state.crm = await api('crm'); await DB.setKv('crm', state.crm); } catch (e) { /* keep the copy on this device */ }
+  }
+  const saveCrmLocal = () => { DB.setKv('crm', state.crm).catch(() => {}); };
+  const ctName = (c) => (c ? [c.first_name, c.last_name].filter(Boolean).join(' ') || c.email || c.phone || c.mobile || c.contact_id : '');
+  const initials = (s) => String(s || '').replace(/[^A-Za-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || '?';
+  const coById = (id) => CRM().companies.find((c) => c.company_id === id);
+  const ctById = (id) => CRM().contacts.find((c) => c.contact_id === id);
+  const myEmail = () => String((state.me && state.me.user && state.me.user.email) || '').toLowerCase();
+  const ownerName = (e) => { if (!e) return ''; const o = CRM().owners.find((x) => x.email === String(e).toLowerCase()); return o ? o.name : String(e).split('@')[0]; };
+  const crmLinks = (type, id) => CRM().links.filter((l) => l.a_type === type && String(l.a_id) === String(id));
+  const crmLinkedTo = (bType, bId) => CRM().links.filter((l) => l.b_type === bType && String(l.b_id) === String(bId));
+  const lifeChip = (l) => l ? '<span class="life life-' + esc(String(l).toLowerCase().replace(/[^a-z]+/g, '-')) + '">' + esc(l) + '</span>' : '<span class="muted">—</span>';
+  const avatar = (name, kind, big) => '<span class="av' + (kind === 'company' ? ' sq' : '') + (big ? ' lg' : '') + '" aria-hidden="true">' + esc(initials(name)) + '</span>';
+  const crmCanEdit = () => !!CRM().canEdit && can('crm.edit');
+  function crmUpsert(type, rec) {
+    const list = type === 'contact' ? CRM().contacts : CRM().companies;
+    const key = type === 'contact' ? 'contact_id' : 'company_id';
+    const i = list.findIndex((x) => x[key] === rec[key]);
+    if (String(rec.archived).toUpperCase() === 'TRUE' || rec.archived === true) { if (i >= 0) list.splice(i, 1); }
+    else if (i >= 0) list[i] = rec; else list.push(rec);
+    saveCrmLocal();
+  }
+  const dealsOf = (type, id) => {
+    const ids = new Set(crmLinks(type, id).filter((l) => l.b_type === 'project').map((l) => l.b_id));
+    return (W().projects || []).filter((p) => ids.has(p.project_id));
+  };
+  const sitesOf = (type, id) => {
+    const ids = new Set(crmLinks(type, id).filter((l) => l.b_type === 'site').map((l) => l.b_id));
+    return ((state.data && state.data.sites) || []).filter((s) => ids.has(s.site_id));
+  };
+  const dealCompany = (p) => {
+    const l = crmLinkedTo('project', p.project_id).find((x) => x.a_type === 'company');
+    return l ? coById(l.a_id) : null;
+  };
+  const dealContact = (p) => {
+    const l = crmLinkedTo('project', p.project_id).find((x) => x.a_type === 'contact');
+    return l ? ctById(l.a_id) : null;
+  };
+  const crmView = (obj) => {
+    state.crmV = state.crmV || LS.get('crmV', {});
+    return (state.crmV[obj] = Object.assign({ view: 'all', q: '', owner: '', life: '', type: '', sort: obj === 'deals' ? '' : 'created', dir: -1, page: 0 }, state.crmV[obj] || {}));
+  };
+  const saveCrmView = () => LS.set('crmV', Object.assign({}, state.crmV, Object.fromEntries(Object.entries(state.crmV || {}).map(([k, v]) => [k, Object.assign({}, v, { q: '', page: 0 })]))));
+
+  function crmTop(active) {
+    const objs = [['contacts', 'Contacts'], ['companies', 'Companies']].concat(can('project.view') ? [['deals', 'Deals']] : []);
+    return '<nav class="crm-objs" aria-label="CRM">' + objs.map((o) => '<a href="#/crm/' + o[0] + '" class="' + (o[0] === active ? 'on' : '') + '">' + o[1] + '</a>').join('') + '</nav>';
+  }
+
+  async function renderCrm(parts) {
+    if (!can('crm.view')) { view().innerHTML = '<div class="empty">Your role cannot see the CRM.</div>'; return; }
+    if (!state.crm) {
+      view().innerHTML = '<div class="empty">Loading the CRM…</div>';
+      await loadCrm();
+      if (!state.crm) { view().innerHTML = '<div class="empty">' + (online() ? 'The CRM could not be loaded. Is the backend updated to the newest version?' : 'Connect once to download the CRM.') + '</div>'; return; }
+      if (!location.hash.startsWith('#/crm')) return;
+    }
+    const sub = parts[1] || 'contacts';
+    if (sub === 'contact' && parts[2]) renderCrmRecord('contact', decodeURIComponent(parts[2]));
+    else if (sub === 'company' && parts[2]) renderCrmRecord('company', decodeURIComponent(parts[2]));
+    else if (sub === 'deals') renderCrmDeals();
+    else renderCrmIndex(sub === 'companies' ? 'companies' : 'contacts');
+  }
+
+  // ── index (table) ──
+  function crmRows(obj, v) {
+    const me = myEmail();
+    const q = v.q.trim().toLowerCase(), qd = q.replace(/\D/g, '');
+    if (obj === 'contacts') {
+      return CRM().contacts.filter((c) => {
+        if (v.view === 'mine' && c.owner !== me) return false;
+        if (v.view === 'unassigned' && c.owner) return false;
+        if (v.owner && c.owner !== v.owner) return false;
+        if (v.life && c.lifecycle !== v.life) return false;
+        if (!q) return true;
+        const co = coById(c.company_id);
+        const hay = [ctName(c), c.email, c.job_title, co && co.name, c.address].join(' ').toLowerCase();
+        return hay.indexOf(q) >= 0 || (qd.length >= 3 && [c.phone, c.mobile].join(' ').replace(/\D/g, '').indexOf(qd) >= 0);
+      });
+    }
+    return CRM().companies.filter((c) => {
+      if (v.view === 'mine' && c.owner !== me) return false;
+      if (v.view === 'unassigned' && c.owner) return false;
+      if (v.owner && c.owner !== v.owner) return false;
+      if (v.life && c.lifecycle !== v.life) return false;
+      if (v.type && c.type !== v.type) return false;
+      if (!q) return true;
+      return [c.name, c.domain, c.email, c.city, c.address, c.type].join(' ').toLowerCase().indexOf(q) >= 0 ||
+        (qd.length >= 3 && String(c.phone).replace(/\D/g, '').indexOf(qd) >= 0);
+    });
+  }
+  function crmCols(obj) {
+    const openDeals = (type, id) => dealsOf(type, id).filter((p) => p.status !== 'closed').length;
+    if (obj === 'contacts') return [
+      { k: 'name', h: 'Name', v: (c) => ctName(c).toLowerCase(), td: (c) => '<a class="rec" href="#/crm/contact/' + encodeURIComponent(c.contact_id) + '">' + avatar(ctName(c)) + '<span>' + esc(ctName(c)) + (c.job_title ? '<small>' + esc(c.job_title) + '</small>' : '') + '</span></a>' },
+      { k: 'email', h: 'Email', v: (c) => c.email || '', td: (c) => esc(c.email || '') },
+      { k: 'phone', h: 'Phone number', v: (c) => c.phone || c.mobile || '', td: (c) => '<span class="nowrap">' + esc(c.phone || c.mobile || '') + '</span>' },
+      { k: 'company', h: 'Company', v: (c) => ((coById(c.company_id) || {}).name || '').toLowerCase(), td: (c) => { const co = coById(c.company_id); return co ? '<a href="#/crm/company/' + encodeURIComponent(co.company_id) + '">' + esc(co.name) + '</a>' : ''; } },
+      { k: 'lifecycle', h: 'Lifecycle stage', v: (c) => CRM().lifecycle.indexOf(c.lifecycle), td: (c) => lifeChip(c.lifecycle) },
+      { k: 'owner', h: 'Contact owner', v: (c) => ownerName(c.owner), td: (c) => esc(ownerName(c.owner)) || '<span class="muted">No owner</span>' },
+      { k: 'created', h: 'Create date', v: (c) => String(c.created_at || ''), td: (c) => '<span class="nowrap">' + esc(dShort(c.created_at)) + '</span>' },
+    ];
+    return [
+      { k: 'name', h: 'Company name', v: (c) => String(c.name).toLowerCase(), td: (c) => '<a class="rec" href="#/crm/company/' + encodeURIComponent(c.company_id) + '">' + avatar(c.name, 'company') + '<span>' + esc(c.name) + (c.domain ? '<small>' + esc(c.domain) + '</small>' : '') + '</span></a>' },
+      { k: 'type', h: 'Type', v: (c) => c.type || '', td: (c) => esc(c.type || '') },
+      { k: 'phone', h: 'Phone number', v: (c) => c.phone || '', td: (c) => '<span class="nowrap">' + esc(c.phone || '') + '</span>' },
+      { k: 'city', h: 'City', v: (c) => c.city || '', td: (c) => esc(c.city || '') },
+      { k: 'lifecycle', h: 'Lifecycle stage', v: (c) => CRM().lifecycle.indexOf(c.lifecycle), td: (c) => lifeChip(c.lifecycle) },
+      { k: 'contacts', h: 'Contacts', v: (c) => CRM().contacts.filter((x) => x.company_id === c.company_id).length, td: (c) => String(CRM().contacts.filter((x) => x.company_id === c.company_id).length || '') },
+      { k: 'deals', h: 'Open deals', v: (c) => openDeals('company', c.company_id), td: (c) => String(openDeals('company', c.company_id) || '') },
+      { k: 'owner', h: 'Company owner', v: (c) => ownerName(c.owner), td: (c) => esc(ownerName(c.owner)) || '<span class="muted">No owner</span>' },
+      { k: 'created', h: 'Create date', v: (c) => String(c.created_at || ''), td: (c) => '<span class="nowrap">' + esc(dShort(c.created_at)) + '</span>' },
+    ];
+  }
+  const PAGE = 25;
+  function renderCrmIndex(obj) {
+    const v = crmView(obj);
+    const one = obj === 'contacts' ? 'contact' : 'company';
+    const all = obj === 'contacts' ? CRM().contacts : CRM().companies;
+    const cols = crmCols(obj);
+    const rows = crmRows(obj, v);
+    const col = cols.find((c) => c.k === v.sort) || cols.find((c) => c.k === 'created');
+    rows.sort((a, b) => { const x = col.v(a), y = col.v(b); return (x < y ? -1 : x > y ? 1 : 0) * v.dir; });
+    const pages = Math.max(1, Math.ceil(rows.length / PAGE));
+    if (v.page >= pages) v.page = pages - 1;
+    const shown = rows.slice(v.page * PAGE, v.page * PAGE + PAGE);
+    const sel = (id, label, cur, opts) => '<label class="flt"><span class="sr">' + esc(label) + '</span><select id="' + id + '"><option value="">' + esc(label) + '</option>' +
+      opts.map((o) => '<option value="' + esc(o[0]) + '"' + (o[0] === cur ? ' selected' : '') + '>' + esc(o[1]) + '</option>').join('') + '</select></label>';
+    const filtered = v.owner || v.life || v.type;
+    view().innerHTML = crmTop(obj) +
+      '<div class="crm-head"><div><h1>' + (obj === 'contacts' ? 'Contacts' : 'Companies') + '</h1><span class="muted">' + all.length.toLocaleString() + ' record' + (all.length === 1 ? '' : 's') + '</span></div>' +
+        '<div class="actions">' + (crmCanEdit() ? '<button class="btn ghost" type="button" id="crm-import">Import from company sheets</button><button class="btn primary" type="button" id="crm-create">Create ' + one + '</button>' : '') + '</div></div>' +
+      '<div class="crm-views" role="tablist">' + [['all', 'All ' + obj], ['mine', 'My ' + obj], ['unassigned', 'Unassigned ' + obj]].map((t) =>
+        '<button type="button" role="tab" aria-selected="' + (v.view === t[0]) + '" data-view="' + t[0] + '" class="' + (v.view === t[0] ? 'on' : '') + '">' + esc(t[1]) + '</button>').join('') + '</div>' +
+      '<div class="crm-tools"><input id="crm-q" type="search" placeholder="Search name, phone, email' + (obj === 'contacts' ? ', company' : '') + '" value="' + esc(v.q) + '" aria-label="Search">' +
+        sel('f-owner', obj === 'contacts' ? 'Contact owner' : 'Company owner', v.owner, CRM().owners.map((o) => [o.email, o.name])) +
+        sel('f-life', 'Lifecycle stage', v.life, CRM().lifecycle.map((l) => [l, l])) +
+        (obj === 'companies' ? sel('f-type', 'Type', v.type, CRM().companyTypes.map((l) => [l, l])) : '') +
+        (filtered ? '<button class="btn ghost" type="button" id="f-clear">Clear filters</button>' : '') + '</div>' +
+      '<div class="crm-tbl-wrap"><table class="crm-tbl"><thead><tr>' + cols.map((c) => '<th scope="col"><button type="button" data-sort="' + c.k + '" aria-sort="' + (c.k === col.k ? (v.dir > 0 ? 'ascending' : 'descending') : 'none') + '">' + esc(c.h) +
+          (c.k === col.k ? (v.dir > 0 ? ' ▲' : ' ▼') : '') + '</button></th>').join('') + '</tr></thead><tbody>' +
+        (shown.length ? shown.map((r) => '<tr>' + cols.map((c) => '<td>' + c.td(r) + '</td>').join('') + '</tr>').join('')
+          : '<tr><td colspan="' + cols.length + '" class="crm-none">' + (all.length ? 'No ' + obj + ' match these filters.' : 'No ' + obj + ' yet.' + (crmCanEdit() ? ' Use “Import from company sheets” to fill them from the Project Tracker and the maintenance record.' : '')) + '</td></tr>') +
+      '</tbody></table></div>' +
+      '<div class="crm-pager"><button class="btn ghost" type="button" id="pg-prev"' + (v.page ? '' : ' disabled') + '>‹ Prev</button><span class="muted">' +
+        (rows.length ? (v.page * PAGE + 1) + '–' + Math.min(rows.length, (v.page + 1) * PAGE) + ' of ' + rows.length : '0') + '</span>' +
+        '<button class="btn ghost" type="button" id="pg-next"' + (v.page < pages - 1 ? '' : ' disabled') + '>Next ›</button></div>';
+    const again = () => { saveCrmView(); renderCrmIndex(obj); };
+    view().querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => { v.view = b.dataset.view; v.page = 0; again(); }));
+    view().querySelectorAll('[data-sort]').forEach((b) => b.addEventListener('click', () => { if (v.sort === b.dataset.sort) v.dir = -v.dir; else { v.sort = b.dataset.sort; v.dir = b.dataset.sort === 'created' ? -1 : 1; } again(); }));
+    const qi = $('#crm-q');
+    qi.addEventListener('input', () => { v.q = qi.value; v.page = 0; const pos = qi.selectionStart; renderCrmIndex(obj); const n = $('#crm-q'); n.focus(); n.setSelectionRange(pos, pos); });
+    [['f-owner', 'owner'], ['f-life', 'life'], ['f-type', 'type']].forEach(([id, k]) => { const e = $('#' + id); if (e) e.addEventListener('change', () => { v[k] = e.value; v.page = 0; again(); }); });
+    const fc = $('#f-clear'); if (fc) fc.addEventListener('click', () => { v.owner = v.life = v.type = ''; again(); });
+    $('#pg-prev').addEventListener('click', () => { v.page--; again(); });
+    $('#pg-next').addEventListener('click', () => { v.page++; again(); });
+    const cr = $('#crm-create'); if (cr) cr.addEventListener('click', () => openCrmCreate(one));
+    const im = $('#crm-import');
+    if (im) im.addEventListener('click', async () => {
+      if (!online()) { toast('Importing needs the internet.'); return; }
+      im.disabled = true; im.textContent = 'Importing…';
+      try { const r = await api('crmImport', {}); await loadCrm(); toast(r.contacts + ' contacts and ' + r.companies + ' companies added'); }
+      catch (ex) { toast(ex.message); }
+      if (location.hash.startsWith('#/crm')) renderCrmIndex(obj);
+    });
+  }
+
+  // ── create panel (slides in from the right, like HubSpot) ──
+  function crmFormFields(type, rec) {
+    rec = rec || {};
+    const opt = (list, cur, blank) => (blank !== undefined ? '<option value="">' + esc(blank) + '</option>' : '') + list.map((o) => { const [v, l] = Array.isArray(o) ? o : [o, o]; return '<option value="' + esc(v) + '"' + (v === cur ? ' selected' : '') + '>' + esc(l) + '</option>'; }).join('');
+    const inp = (k, label, t, ph) => '<label class="field"><span>' + label + '</span><input data-f="' + k + '" type="' + (t || 'text') + '" value="' + esc(rec[k] || '') + '"' + (ph ? ' placeholder="' + esc(ph) + '"' : '') + '></label>';
+    const owners = opt(CRM().owners.map((o) => [o.email, o.name]), rec.owner === undefined ? myEmail() : rec.owner, 'No owner');
+    if (type === 'contact') {
+      const co = coById(rec.company_id);
+      return '<div class="row2">' + inp('first_name', 'First name') + inp('last_name', 'Last name') + '</div>' +
+        inp('email', 'Email', 'email') + '<div class="row2">' + inp('phone', 'Phone number', 'tel') + inp('mobile', 'Mobile phone', 'tel') + '</div>' +
+        inp('job_title', 'Job title', 'text', 'e.g. Property manager') +
+        '<label class="field"><span>Company</span><input data-f="company_name" type="text" list="crm-co-list" value="' + esc(co ? co.name : '') + '" placeholder="Type to find a company, or a new name to add it">' +
+          '<datalist id="crm-co-list">' + CRM().companies.map((c) => '<option value="' + esc(c.name) + '">').join('') + '</datalist></label>' +
+        '<div class="row2"><label class="field"><span>Contact owner</span><select data-f="owner">' + owners + '</select></label>' +
+          '<label class="field"><span>Lifecycle stage</span><select data-f="lifecycle">' + opt(CRM().lifecycle, rec.lifecycle || 'Lead') + '</select></label></div>';
+    }
+    return inp('name', 'Company name') + '<div class="row2"><label class="field"><span>Type</span><select data-f="type">' + opt(CRM().companyTypes, rec.type || '', '—') + '</select></label>' +
+        inp('domain', 'Company domain', 'text', 'e.g. acmepm.ca') + '</div>' +
+      '<div class="row2">' + inp('phone', 'Phone number', 'tel') + inp('email', 'Email', 'email') + '</div>' +
+      '<div class="row2">' + inp('address', 'Street address') + inp('city', 'City') + '</div>' +
+      '<div class="row2"><label class="field"><span>Company owner</span><select data-f="owner">' + owners + '</select></label>' +
+        '<label class="field"><span>Lifecycle stage</span><select data-f="lifecycle">' + opt(CRM().lifecycle, rec.lifecycle || 'Lead') + '</select></label></div>';
+  }
+  /** Company typed in a contact form → its id; a new name creates the company first. */
+  async function crmCompanyId(name) {
+    name = String(name || '').trim();
+    if (!name) return '';
+    const hit = CRM().companies.find((c) => c.name.trim().toLowerCase() === name.toLowerCase());
+    if (hit) return hit.company_id;
+    const r = await api('crmSave', { object: 'company', record: { name: name, owner: myEmail() } });
+    crmUpsert('company', r.record);
+    return r.record.company_id;
+  }
+  function openCrmCreate(type, preset, link, after) {
+    openDrawer('Create ' + type, '<form class="stack" id="crm-cf" novalidate>' + crmFormFields(type, preset) +
+      '<p class="muted" id="crm-cerr" role="alert"></p>' +
+      '<div class="actions"><button class="btn primary" type="submit">Create</button><button class="btn ghost" type="button" id="crm-cmore">Create and add another</button><button class="btn ghost" type="button" id="crm-ccancel">Cancel</button></div></form>');
+    const f = $('#crm-cf');
+    const first = f.querySelector('input'); if (first) first.focus();
+    $('#crm-ccancel').addEventListener('click', () => { $('#drawer').hidden = true; $('#drawer').innerHTML = ''; });
+    const go = async (more) => {
+      const err = $('#crm-cerr'); err.textContent = '';
+      if (!online()) { err.textContent = 'Creating a record needs the internet.'; return; }
+      const rec = {}; f.querySelectorAll('[data-f]').forEach((e) => { rec[e.dataset.f] = e.value.trim(); });
+      try {
+        if (type === 'contact') { rec.company_id = await crmCompanyId(rec.company_name); delete rec.company_name; }
+        const r = await api('crmSave', { object: type, record: rec, link: link || null });
+        crmUpsert(type, r.record);
+        if (link) state.crm.links.push({ a_type: type, a_id: r.record[type === 'contact' ? 'contact_id' : 'company_id'], b_type: link.type, b_id: link.id });
+        toast(r.restored ? 'Brought back (it was removed earlier)' : (type === 'contact' ? 'Contact' : 'Company') + ' created');
+        if (more) { f.reset(); f.querySelectorAll('input').forEach((i) => { i.value = ''; }); f.querySelector('input').focus(); return; }
+        $('#drawer').hidden = true; $('#drawer').innerHTML = '';
+        if (after) after(r.record); else location.hash = '#/crm/' + type + '/' + encodeURIComponent(r.record[type === 'contact' ? 'contact_id' : 'company_id']);
+      } catch (ex) { err.textContent = ex.message; }
+    };
+    f.addEventListener('submit', (e) => { e.preventDefault(); go(false); });
+    $('#crm-cmore').addEventListener('click', () => go(true));
+  }
+
+  /** A searchable list in the side panel; onPick(id) runs when one is chosen. */
+  function crmPick(title, options, onPick, newLabel, onNew) {
+    openDrawer(title, '<input id="pk-q" type="search" placeholder="Search" aria-label="Search">' + (newLabel ? '<button type="button" class="btn ghost" id="pk-new">' + esc(newLabel) + '</button>' : '') + '<div class="pk-list" id="pk-list"></div>');
+    if (newLabel) $('#pk-new').addEventListener('click', () => { onNew(); });
+    const draw = () => {
+      const q = $('#pk-q').value.trim().toLowerCase();
+      const hits = options.filter((o) => !q || (o.label + ' ' + (o.sub || '')).toLowerCase().indexOf(q) >= 0).slice(0, 60);
+      $('#pk-list').innerHTML = hits.length ? hits.map((o) => '<button type="button" class="pk" data-id="' + esc(o.id) + '"><b>' + esc(o.label) + '</b>' + (o.sub ? '<small>' + esc(o.sub) + '</small>' : '') + '</button>').join('') : '<div class="empty">Nothing found.</div>';
+      $('#pk-list').querySelectorAll('.pk').forEach((b) => b.addEventListener('click', async () => {
+        b.disabled = true;
+        try { await onPick(b.dataset.id); $('#drawer').hidden = true; $('#drawer').innerHTML = ''; } catch (ex) { b.disabled = false; toast(ex.message); }
+      }));
+    };
+    $('#pk-q').addEventListener('input', draw); $('#pk-q').focus(); draw();
+  }
+  async function crmLinkNow(aT, aId, bT, bId, remove) {
+    await api('crmLink', { a_type: aT, a_id: aId, b_type: bT, b_id: bId, remove: !!remove });
+    const L = state.crm.links;
+    for (let i = L.length - 1; i >= 0; i--) if (L[i].a_type === aT && String(L[i].a_id) === String(aId) && L[i].b_type === bT && String(L[i].b_id) === String(bId)) L.splice(i, 1);
+    if (!remove) L.push({ a_type: aT, a_id: aId, b_type: bT, b_id: bId, by: myEmail(), at: new Date().toISOString() });
+    saveCrmLocal();
+  }
+  async function crmSet(type, id, fields) {
+    const r = await api('crmSave', { object: type, id: id, record: fields });
+    crmUpsert(type, r.record);
+    return r.record;
+  }
+
+  // ── record page: properties | activity | associations ──
+  function crmTimeline(type, rec) {
+    const id = rec[type === 'contact' ? 'contact_id' : 'company_id'];
+    const items = CRM().notes.filter((n) => n.object_type === type && n.object_id === id)
+      .map((n) => ({ at: n.at, kind: 'Note', who: n.by, html: '<p class="note-text">' + esc(n.text) + '</p>' }));
+    const deals = dealsOf(type, id);
+    const dealIds = new Set(deals.map((p) => p.project_id));
+    (W().projectEvents || []).filter((e) => dealIds.has(e.project_id) && (e.stage || e.note)).forEach((e) => {
+      const p = deals.find((x) => x.project_id === e.project_id);
+      items.push({ at: e.at, kind: 'Deal', who: e.by, html: '<p><a href="#/projects/' + encodeURIComponent(e.project_id) + '">' + esc(p ? p.title : e.project_id) + '</a>' +
+        (e.stage ? ' moved to <b>' + esc(e.stage) + '</b>' : '') + (e.note ? ' · ' + esc(e.note) : '') + '</p>' });
+    });
+    const linkedSites = sitesOf(type, id);
+    const siteIds = new Set(linkedSites.map((s) => s.site_id)), siteKeys = new Set(linkedSites.map(siteKey).filter(Boolean));
+    ((state.data && state.data.reports) || []).filter((r) => !r.pending && ((r.site_id && siteIds.has(r.site_id)) || (siteKeys.size && siteKeys.has(addrKey(r.site_name))))).forEach((r) => {
+      items.push({ at: r.server_time, kind: 'Service report', who: r.tech_name, html: '<p><a href="#/reports/' + encodeURIComponent(r.report_id) + '">' + esc(r.report_id) + '</a> · ' + esc(r.site_name || '') +
+        ' · ' + esc([r.call_type, r.work_done].filter(Boolean).join(' — ')) + '</p>' });
+    });
+    items.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+    return items;
+  }
+  const whoName = (e) => { const n = ownerName(e); return n === 'import' ? 'Import' : n; };
+  function timelineHtml(items) {
+    if (!items.length) return '<div class="empty">No activity yet. Notes, deal steps and service reports at linked sites show here.</div>';
+    let month = '';
+    return '<ol class="crm-tl">' + items.map((it) => {
+      const d = new Date(it.at); const m = isNaN(d) ? '' : d.toLocaleDateString('en-CA', { month: 'long', year: 'numeric' });
+      const head = m !== month ? (month = m, '<li class="tl-month">' + esc(m) + '</li>') : '';
+      return head + '<li class="tl-item"><div class="tl-h"><b>' + esc(it.kind) + '</b><span class="muted">' + (it.who ? 'by ' + esc(whoName(it.who)) + ' · ' : '') + esc(fmtDate(it.at)) + '</span></div>' + it.html + '</li>';
+    }).join('') + '</ol>';
+  }
+  function crmProps(type, rec) {
+    const ed = crmCanEdit();
+    const fields = type === 'contact'
+      ? [['email', 'Email', 'email'], ['phone', 'Phone number', 'tel'], ['mobile', 'Mobile phone', 'tel'], ['job_title', 'Job title'], ['owner', 'Contact owner', 'owner'],
+         ['lifecycle', 'Lifecycle stage', 'life'], ['address', 'Address'], ['notes', 'About', 'area']]
+      : [['name', 'Company name'], ['type', 'Type', 'type'], ['domain', 'Company domain'], ['phone', 'Phone number', 'tel'], ['email', 'Email', 'email'],
+         ['address', 'Street address'], ['city', 'City'], ['owner', 'Company owner', 'owner'], ['lifecycle', 'Lifecycle stage', 'life'], ['notes', 'About', 'area']];
+    const opts = (list, cur, blank) => (blank !== undefined ? '<option value="">' + esc(blank) + '</option>' : '') + list.map((o) => { const [v, l] = Array.isArray(o) ? o : [o, o]; return '<option value="' + esc(v) + '"' + (v === cur ? ' selected' : '') + '>' + esc(l) + '</option>'; }).join('');
+    return '<div class="props">' + fields.map(([k, label, kind]) => {
+      const val = rec[k] || '';
+      let ctl;
+      if (!ed) ctl = '<div class="pv">' + (kind === 'owner' ? esc(ownerName(val)) : kind === 'life' ? lifeChip(val) : esc(val)) + (val ? '' : '<span class="muted">—</span>') + '</div>';
+      else if (kind === 'owner') ctl = '<select data-p="' + k + '">' + opts(CRM().owners.map((o) => [o.email, o.name]), val, 'No owner') + '</select>';
+      else if (kind === 'life') ctl = '<select data-p="' + k + '">' + opts(CRM().lifecycle, val, '—') + '</select>';
+      else if (kind === 'type') ctl = '<select data-p="' + k + '">' + opts(CRM().companyTypes, val, '—') + '</select>';
+      else if (kind === 'area') ctl = '<textarea data-p="' + k + '" rows="3" placeholder="—">' + esc(val) + '</textarea>';
+      else ctl = '<input data-p="' + k + '" type="' + (kind || 'text') + '" value="' + esc(val) + '" placeholder="—">';
+      return '<label class="prop"><span>' + esc(label) + '</span>' + ctl + '</label>';
+    }).join('') + '</div>';
+  }
+  function assocCard(title, count, bodyHtml, addId, extra) {
+    return '<details class="assoc" open><summary><b>' + esc(title) + '</b> <span class="muted">(' + count + ')</span>' +
+      (addId && crmCanEdit() ? '<button type="button" class="link-btn" id="' + addId + '">+ Add</button>' : '') + (extra || '') + '</summary>' +
+      '<div class="assoc-body">' + (bodyHtml || '<p class="muted">None yet.</p>') + '</div></details>';
+  }
+  const rmBtn = (kind, id) => crmCanEdit() ? '<button type="button" class="x" data-rm="' + kind + '" data-id="' + esc(id) + '" aria-label="Remove link">×</button>' : '';
+  function dealMini(p) {
+    return '<div class="mini"><a href="#/projects/' + encodeURIComponent(p.project_id) + '"><b>' + esc(p.title) + '</b></a>' +
+      '<small>' + esc([p.stage, p.value ? moneyFmt(p.value) : ''].filter(Boolean).join(' · ')) + '</small>' + rmBtn('project', p.project_id) + '</div>';
+  }
+  function renderCrmRecord(type, id) {
+    const rec = type === 'contact' ? ctById(id) : coById(id);
+    const list = type === 'contact' ? 'contacts' : 'companies';
+    if (!rec) { view().innerHTML = crmTop(list) + '<div class="empty">This ' + type + ' is not in the CRM (it may have been removed). <a href="#/crm/' + list + '">Back to ' + list + '</a></div>'; return; }
+    const name = type === 'contact' ? ctName(rec) : rec.name;
+    const co = type === 'contact' ? coById(rec.company_id) : null;
+    const tab = state.crmTab || 'overview';
+    const items = crmTimeline(type, rec);
+    const deals = dealsOf(type, id), sites = sitesOf(type, id);
+    const people = type === 'company' ? CRM().contacts.filter((c) => c.company_id === id) : [];
+    const lastAct = items.find((i) => i.kind !== 'Created');
+    const composer = crmCanEdit() ? '<form class="composer" id="crm-nf"><label class="sr" for="crm-note">Note</label><textarea id="crm-note" rows="3" placeholder="Write a note… (who you talked to, what they need, next steps)"></textarea>' +
+      '<div class="actions"><button class="btn primary" type="submit">Save note</button><span class="muted" id="crm-nerr" role="alert"></span></div></form>' : '';
+    const quick = [rec.email ? '<a class="qa" href="mailto:' + esc(rec.email) + '">Email</a>' : '', (rec.phone || rec.mobile) ? '<a class="qa" href="tel:' + esc(String(rec.phone || rec.mobile).replace(/[^\d+]/g, '')) + '">Call</a>' : '',
+      crmCanEdit() ? '<button class="qa" type="button" id="qa-note">Note</button>' : ''].filter(Boolean).join('');
+    view().innerHTML = crmTop(list) +
+      '<div class="crm-rec">' +
+      '<aside class="crm-left">' +
+        '<a class="back" href="#/crm/' + list + '">‹ ' + (type === 'contact' ? 'Contacts' : 'Companies') + '</a>' +
+        '<div class="crm-id">' + avatar(name, type, true) + '<div><h1>' + esc(name) + '</h1>' +
+          (type === 'contact' ? '<div class="muted">' + esc([rec.job_title, co ? co.name : ''].filter(Boolean).join(' at ')) + '</div>' : (rec.domain ? '<div class="muted">' + esc(rec.domain) + '</div>' : '')) +
+          (rec.email ? '<div><a href="mailto:' + esc(rec.email) + '">' + esc(rec.email) + '</a></div>' : '') +
+          ((rec.phone || rec.mobile) ? '<div class="mono">' + esc(rec.phone || rec.mobile) + '</div>' : '') + '</div></div>' +
+        (quick ? '<div class="qas">' + quick + '</div>' : '') +
+        '<details class="crm-sec" open><summary>About this ' + type + '</summary>' + crmProps(type, rec) + '<p class="muted small" id="prop-msg" aria-live="polite"></p></details>' +
+        '<p class="muted small">' + esc(rec[type === 'contact' ? 'contact_id' : 'company_id']) + (rec.source && rec.source !== 'OA' ? ' · added from ' + esc(rec.source) : '') + '</p>' +
+        (crmCanEdit() ? '<details class="danger-zone"><summary>Remove this ' + type + '</summary><p class="muted">It leaves the CRM but stays in the sheet, and the import will not add it back. Creating it again brings it back.</p>' +
+          '<div class="actions"><button class="btn danger" type="button" id="crm-arch">Remove ' + type + '</button></div></details>' : '') +
+      '</aside>' +
+      '<main class="crm-mid">' +
+        '<div class="crm-tabs" role="tablist">' + [['overview', 'Overview'], ['activities', 'Activities']].map((t) =>
+          '<button type="button" role="tab" aria-selected="' + (tab === t[0]) + '" data-tab="' + t[0] + '" class="' + (tab === t[0] ? 'on' : '') + '">' + t[1] + '</button>').join('') + '</div>' +
+        (tab === 'overview'
+          ? '<section class="panel"><h2>Data highlights</h2><div class="hl"><div><small>Create date</small><b>' + esc(dShort(rec.created_at)) + '</b></div>' +
+              '<div><small>Lifecycle stage</small><b>' + lifeChip(rec.lifecycle) + '</b></div>' +
+              '<div><small>Last activity date</small><b>' + esc(lastAct ? dShort(lastAct.at) : '—') + '</b></div>' +
+              '<div><small>Open deals</small><b>' + deals.filter((p) => p.status !== 'closed').length + '</b></div></div></section>' +
+            '<section class="panel"><h2>Recent activities</h2>' + composer + timelineHtml(items.slice(0, 3)) +
+              (items.length > 3 ? '<button class="link-btn" type="button" data-tab="activities">See all ' + items.length + ' activities ›</button>' : '') + '</section>' +
+            (deals.length ? '<section class="panel"><h2>Deals</h2><table class="crm-tbl small"><thead><tr><th>Deal name</th><th>Stage</th><th>Amount</th></tr></thead><tbody>' +
+              deals.map((p) => '<tr><td><a href="#/projects/' + encodeURIComponent(p.project_id) + '">' + esc(p.title) + '</a></td><td>' + esc(p.stage) + '</td><td class="mono">' + esc(moneyFmt(p.value)) + '</td></tr>').join('') + '</tbody></table></section>' : '')
+          : '<section class="panel">' + composer + timelineHtml(items) + '</section>') +
+      '</main>' +
+      '<aside class="crm-right">' +
+        (type === 'contact'
+          ? assocCard('Company', co ? 1 : 0, co ? '<div class="mini"><a href="#/crm/company/' + encodeURIComponent(co.company_id) + '"><b>' + esc(co.name) + '</b></a><small>' + esc([co.type, co.phone].filter(Boolean).join(' · ')) + '</small>' + rmBtn('company', co.company_id) + '</div>' : '', 'as-co')
+          : assocCard('Contacts', people.length, people.map((c) => '<div class="mini"><a href="#/crm/contact/' + encodeURIComponent(c.contact_id) + '"><b>' + esc(ctName(c)) + '</b></a><small>' + esc([c.job_title, c.email || c.phone].filter(Boolean).join(' · ')) + '</small>' + rmBtn('contact', c.contact_id) + '</div>').join(''), 'as-ct')) +
+        (can('project.view') ? assocCard('Deals', deals.length, deals.map(dealMini).join(''), 'as-deal') : '') +
+        assocCard('Sites', sites.length, sites.map((s) => '<div class="mini"><a href="#/sites/' + encodeURIComponent(s.site_id) + '"><b>' + esc(s.name) + '</b></a><small>' + esc([s.frequency, s.city].filter(Boolean).join(' · ')) + '</small>' + rmBtn('site', s.site_id) + '</div>').join(''), 'as-site') +
+      '</aside></div>';
+
+    const again = () => renderCrmRecord(type, id);
+    view().querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => { state.crmTab = b.dataset.tab; again(); }));
+    // properties save as soon as they change
+    view().querySelectorAll('[data-p]').forEach((e) => e.addEventListener('change', async () => {
+      const msg = $('#prop-msg'); msg.textContent = 'Saving…';
+      try { const f = {}; f[e.dataset.p] = e.value; await crmSet(type, id, f); msg.textContent = 'Saved'; if (['first_name', 'last_name', 'name', 'lifecycle', 'email', 'phone', 'mobile', 'job_title'].indexOf(e.dataset.p) >= 0) setTimeout(again, 300); }
+      catch (ex) { msg.textContent = ex.message; }
+    }));
+    const nf = $('#crm-nf');
+    if (nf) nf.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const t = $('#crm-note').value.trim(); const err = $('#crm-nerr');
+      if (!t) { err.textContent = 'Write the note first.'; return; }
+      if (!online()) { err.textContent = 'Saving a note needs the internet.'; return; }
+      try { const r = await api('crmNote', { object_type: type, object_id: id, text: t }); state.crm.notes.push(r.note); saveCrmLocal(); toast('Note saved'); again(); }
+      catch (ex) { err.textContent = ex.message; }
+    });
+    const qn = $('#qa-note'); if (qn) qn.addEventListener('click', () => { const n = $('#crm-note'); if (n) { n.focus(); n.scrollIntoView({ block: 'center' }); } });
+    const arch = $('#crm-arch');
+    if (arch) arch.addEventListener('click', async () => {
+      if (!arch.dataset.armed) { arch.dataset.armed = '1'; arch.textContent = 'Click again to remove'; return; }
+      try { const r = await api('crmArchive', { object: type, id: id }); crmUpsert(type, r.record); toast('Removed'); location.hash = '#/crm/' + list; } catch (ex) { toast(ex.message); }
+    });
+    // associations
+    const bind = (bid, fn) => { const b = $('#' + bid); if (b) b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); fn(); }); };
+    bind('as-co', () => crmPick('Add a company', CRM().companies.map((c) => ({ id: c.company_id, label: c.name, sub: [c.type, c.city].filter(Boolean).join(' · ') })),
+      async (cid) => { await crmSet('contact', id, { company_id: cid }); again(); },
+      'Create a new company', () => openCrmCreate('company', {}, null, async (c) => { await crmSet('contact', id, { company_id: c.company_id }); again(); })));
+    bind('as-ct', () => crmPick('Add a contact', CRM().contacts.filter((c) => c.company_id !== id).map((c) => ({ id: c.contact_id, label: ctName(c), sub: [c.email, c.phone, (coById(c.company_id) || {}).name].filter(Boolean).join(' · ') })),
+      async (cid) => { await crmSet('contact', cid, { company_id: id }); again(); },
+      'Create a new contact', () => openCrmCreate('contact', { company_id: id }, null, () => again())));
+    bind('as-deal', () => crmPick('Add a deal', (W().projects || []).filter((p) => !deals.some((d) => d.project_id === p.project_id)).map((p) => ({ id: p.project_id, label: p.title, sub: [p.project_id, p.stage, p.site_name].filter(Boolean).join(' · ') })),
+      async (pid) => { await crmLinkNow(type, id, 'project', pid); again(); }));
+    bind('as-site', () => crmPick('Add a site', ((state.data && state.data.sites) || []).filter((s) => !sites.some((x) => x.site_id === s.site_id)).map((s) => ({ id: s.site_id, label: s.name, sub: [s.site_id, s.frequency, s.city].filter(Boolean).join(' · ') })),
+      async (sid) => { await crmLinkNow(type, id, 'site', sid); again(); }));
+    view().querySelectorAll('[data-rm]').forEach((b) => b.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const kind = b.dataset.rm, oid = b.dataset.id;
+      try {
+        if (kind === 'company') await crmSet('contact', id, { company_id: '' });
+        else if (kind === 'contact') await crmSet('contact', oid, { company_id: '' });
+        else await crmLinkNow(type, id, kind, oid, true);
+        again();
+      } catch (ex) { toast(ex.message); }
+    }));
+  }
+
+  // ── deals: projects shown as a pipeline board ──
+  function renderCrmDeals() {
+    const w = W();
+    if (!w.projects) { view().innerHTML = crmTop('deals') + '<div class="empty">' + (state.work ? 'Your role cannot see projects.' : 'Connect once to download projects.') + '</div>'; return; }
+    const v = crmView('deals');
+    const types = [...new Set((w.projectStages || []).map((s) => s.type_id))].filter((t) => w.projects.some((p) => p.type_id === t) || t === 'INS' || t === 'REP');
+    if (!v.type || types.indexOf(v.type) < 0) v.type = types[0] || 'INS';
+    const names = [...new Set((w.projectStages || []).filter((s) => s.type_id === v.type).sort((a, b) => Number(a.order) - Number(b.order)).map((s) => s.stage))];
+    const q = v.q.trim().toLowerCase();
+    const deals = w.projects.filter((p) => p.type_id === v.type && (!v.owner || String(p.owner_email).toLowerCase() === v.owner)).filter((p) => {
+      if (!q) return true;
+      const co = dealCompany(p), ct = dealContact(p);
+      return [p.title, p.project_id, p.site_name, p.customer, co && co.name, ct && ctName(ct)].join(' ').toLowerCase().indexOf(q) >= 0;
+    });
+    const extra = [...new Set(deals.map((p) => p.stage).filter((s) => s && names.indexOf(s) < 0))];
+    const cols = names.concat(extra);
+    const mode = v.view === 'table' ? 'table' : 'board';
+    const total = (list) => list.reduce((s, p) => s + (Number(p.value) || 0), 0);
+    const card = (p) => {
+      const co = dealCompany(p), ct = dealContact(p);
+      const who = co ? co.name : ct ? ctName(ct) : p.customer;
+      return '<a class="deal" href="#/projects/' + encodeURIComponent(p.project_id) + '"><b>' + esc(p.title) + '</b>' +
+        (p.value ? '<span class="mono">' + esc(moneyFmt(p.value)) + '</span>' : '') +
+        (who ? '<small>' + esc(who) + '</small>' : '') +
+        '<small class="muted">' + esc(p.project_id) + (p.stage_at ? ' · ' + daysSince(p.stage_at) + 'd in step' : '') + (p.owner_email ? ' · ' + esc(ownerName(p.owner_email)) : '') + '</small></a>';
+    };
+    view().innerHTML = crmTop('deals') +
+      '<div class="crm-head"><div><h1>Deals</h1><span class="muted">' + deals.length + ' record' + (deals.length === 1 ? '' : 's') + ' · ' + esc(moneyFmt(total(deals)) || '$0') + '</span></div>' +
+        '<div class="actions">' + (can('project.create') ? '<a class="btn primary" href="#/projects/new">Create deal</a>' : '') + '</div></div>' +
+      '<div class="crm-tools"><label class="flt"><span class="sr">Pipeline</span><select id="d-type">' + types.map((t) => '<option value="' + esc(t) + '"' + (t === v.type ? ' selected' : '') + '>' + esc(typeName(t).name) + ' pipeline</option>').join('') + '</select></label>' +
+        '<input id="crm-q" type="search" placeholder="Search deals" value="' + esc(v.q) + '" aria-label="Search deals">' +
+        '<label class="flt"><span class="sr">Deal owner</span><select id="d-owner"><option value="">Deal owner</option>' + CRM().owners.map((o) => '<option value="' + esc(o.email) + '"' + (o.email === v.owner ? ' selected' : '') + '>' + esc(o.name) + '</option>').join('') + '</select></label>' +
+        '<div class="seg" role="group" aria-label="View"><button type="button" data-mode="board" class="' + (mode === 'board' ? 'on' : '') + '">Board</button><button type="button" data-mode="table" class="' + (mode === 'table' ? 'on' : '') + '">Table</button></div></div>' +
+      (mode === 'board'
+        ? '<div class="board">' + cols.map((st) => { const list = deals.filter((p) => p.stage === st);
+            return '<section class="bcol"><header><b>' + esc(st) + '</b><span class="count-b">' + list.length + '</span></header><div class="bcards">' + list.map(card).join('') + '</div>' +
+              '<footer>Total: <span class="mono">' + esc(moneyFmt(total(list)) || '$0') + '</span></footer></section>'; }).join('') + '</div>'
+        : '<div class="crm-tbl-wrap"><table class="crm-tbl"><thead><tr><th>Deal name</th><th>Deal stage</th><th>Amount</th><th>Company</th><th>Contact</th><th>Deal owner</th><th>Create date</th></tr></thead><tbody>' +
+            (deals.length ? deals.slice().sort((a, b) => String(b.updated_at || b.created_at).localeCompare(String(a.updated_at || a.created_at))).map((p) => { const co = dealCompany(p), ct = dealContact(p);
+              return '<tr><td><a class="rec" href="#/projects/' + encodeURIComponent(p.project_id) + '"><span>' + esc(p.title) + '<small>' + esc(p.project_id) + '</small></span></a></td><td>' + esc(p.stage) + '</td><td class="mono">' + esc(moneyFmt(p.value)) + '</td>' +
+                '<td>' + (co ? '<a href="#/crm/company/' + encodeURIComponent(co.company_id) + '">' + esc(co.name) + '</a>' : esc(p.customer || '')) + '</td>' +
+                '<td>' + (ct ? '<a href="#/crm/contact/' + encodeURIComponent(ct.contact_id) + '">' + esc(ctName(ct)) + '</a>' : '') + '</td>' +
+                '<td>' + esc(ownerName(p.owner_email)) + '</td><td class="nowrap">' + esc(dShort(p.created_at)) + '</td></tr>'; }).join('')
+              : '<tr><td colspan="7" class="crm-none">No deals in this pipeline.</td></tr>') + '</tbody></table></div>') +
+      '<p class="muted small">Deals are the OA projects. Open one to move it to the next step — the step owners and Chris’s scope rules still apply.</p>';
+    const again = () => { saveCrmView(); renderCrmDeals(); };
+    $('#d-type').addEventListener('change', (e) => { v.type = e.target.value; again(); });
+    $('#d-owner').addEventListener('change', (e) => { v.owner = e.target.value; again(); });
+    view().querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => { v.view = b.dataset.mode; again(); }));
+    const qi = $('#crm-q');
+    qi.addEventListener('input', () => { v.q = qi.value; const pos = qi.selectionStart; renderCrmDeals(); const n = $('#crm-q'); n.focus(); n.setSelectionRange(pos, pos); });
+  }
+
+  // ── the CRM box on a project page ──
+  function crmProjectHtml(p) {
+    if (!can('crm.view') || !state.crm) return '';
+    const ls = crmLinkedTo('project', p.project_id);
+    const cos = ls.filter((l) => l.a_type === 'company').map((l) => coById(l.a_id)).filter(Boolean);
+    const cts = ls.filter((l) => l.a_type === 'contact').map((l) => ctById(l.a_id)).filter(Boolean);
+    const chips = cos.map((c) => '<a class="crm-chip" href="#/crm/company/' + encodeURIComponent(c.company_id) + '">' + avatar(c.name, 'company') + esc(c.name) + '</a>')
+      .concat(cts.map((c) => '<a class="crm-chip" href="#/crm/contact/' + encodeURIComponent(c.contact_id) + '">' + avatar(ctName(c)) + esc(ctName(c)) + (c.phone || c.mobile ? ' <span class="muted mono">' + esc(c.phone || c.mobile) + '</span>' : '') + '</a>'));
+    return '<div class="crm-proj"><span class="muted">CRM</span>' + (chips.join('') || '<span class="muted">No contact or company linked.</span>') +
+      (crmCanEdit() ? '<button type="button" class="link-btn" id="pj-crm">+ Link contact or company</button>' : '') + '</div>';
+  }
+  function bindCrmProject(p) {
+    const b = $('#pj-crm'); if (!b) return;
+    b.addEventListener('click', () => crmPick('Link a contact or company',
+      CRM().companies.map((c) => ({ id: 'company:' + c.company_id, label: c.name, sub: 'Company' + (c.city ? ' · ' + c.city : '') }))
+        .concat(CRM().contacts.map((c) => ({ id: 'contact:' + c.contact_id, label: ctName(c), sub: 'Contact' + ((coById(c.company_id) || {}).name ? ' · ' + coById(c.company_id).name : '') + (c.phone ? ' · ' + c.phone : '') }))),
+      async (val) => { const [t, i] = val.split(':'); await crmLinkNow(t, i, 'project', p.project_id); renderProject(p.project_id); }));
+  }
+
   function route() {
     state.touched = false;
     const dr = $('#drawer'); if (!dr.hidden) { dr.hidden = true; dr.innerHTML = ''; }
@@ -1761,7 +2275,7 @@
     const parts = path.split('/').filter(Boolean);
     const tab = parts[0] || 'reports';
     document.querySelectorAll('.tabs a').forEach((a) => a.classList.toggle('active', a.dataset.tab === (tab === 'sites' ? 'search' : tab)));
-    view().classList.toggle('wide', tab === 'tables' || tab === 'schedule' || (tab === 'orders' && !parts[1]));
+    view().classList.toggle('wide', tab === 'tables' || tab === 'schedule' || tab === 'crm' || (tab === 'orders' && !parts[1]));
     if (tab === 'search') renderSearch();
     else if (tab === 'schedule') renderSchedule();
     else if (tab === 'tables') renderTables();
@@ -1778,6 +2292,7 @@
     else if (tab === 'projects' && parts[1]) renderProject(decodeURIComponent(parts[1]));
     else if (tab === 'projects') renderProjects();
     else if (tab === 'mail') renderMail();
+    else if (tab === 'crm') renderCrm(parts);
     else if (tab === 'sites' && parts[1]) renderSiteDetail(decodeURIComponent(parts[1]));
     else if (tab === 'sites') renderSites();
     else renderReports();
