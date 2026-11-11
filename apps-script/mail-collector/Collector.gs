@@ -1,12 +1,12 @@
 /**
- * Krysnor OA – mail collector (READ-ONLY)
- * ---------------------------------------
- * Runs inside the mailbox's own Google account, with the owner's permission. The same file works for
- * pm@krysnorelevator.ca (project manager: customers we already work with) and sales@krysnorelevator.ca
- * (quotes, follow-ups, new customers): it uses whichever account it is installed in.
+ * OA – mail collector (READ-ONLY)
+ * -------------------------------
+ * Runs inside the mailbox's own Google account, with the owner's permission. The same file works for any
+ * mailbox listed in the OA's Mailboxes tab (e.g. the project-manager box and the sales box): it uses whichever
+ * account it is installed in.
  *
  * What it does every 30 minutes:
- *   1. asks the OA which emails matter (words like quote, estimate, repair, order, pickup, install, TSSA …)
+ *   1. asks the OA which emails matter (words like quote, estimate, repair, order, pickup, install, inspection …)
  *   2. searches this mailbox for recent matching emails
  *   3. sends the OA a short record of each one: date, from, to, subject, the first part of the message,
  *      attachment names and a link back to the email
@@ -16,23 +16,25 @@
  * What it can NOT do: the only Gmail permission it has is gmail.readonly. It cannot send, delete, move,
  * label or mark anything as read. Nothing in the mailbox changes. To stop it: run uninstall(), or delete this project.
  *
- * Setup (Kyle, once):
- *   1. script.google.com → New project → name it "Krysnor OA mail collector"
+ * Setup (the mailbox owner, once):
+ *   1. script.google.com → New project → name it "OA mail collector"
  *   2. Project Settings (gear) → tick "Show appsscript.json manifest file in editor"
  *   3. Paste appsscript.json and this file (Collector.gs) over the default ones
- *   4. Paste the key Kaixin gives you for THIS mailbox into MAIL_KEY below, save
+ *   4. Paste the key the OA owner gives you for THIS mailbox into MAIL_KEY below, save
  *   5. Select install in the toolbar → Run → allow the permissions Google shows
  */
 
 const OA_URL = 'https://script.google.com/macros/s/AKfycbxL29V03kLn5WMkSO7eaJQHgBUUkCJjPHeXJvRCaTTnZgHlWKVli-zyRPl9Y-KqL3Fg/exec';
+// Optional: the company email domain (e.g. example.ca). When set, the collector refuses to run in any other account.
+const COMPANY_DOMAIN = '';
 const MAILBOX = Gmail.Users.getProfile('me').emailAddress.toLowerCase();   // the account this is installed in (needs only gmail.readonly)
-const MAIL_KEY = 'PASTE_THE_KEY_FROM_KAIXIN_HERE';
+const MAIL_KEY = 'PASTE_THE_KEY_HERE';
 const EXCERPT_CHARS = 1500;      // how much of each message the OA keeps
 const MAX_PER_RUN = 150;
 
 function install() {
-  if (!/@krysnorelevator\.ca$/.test(MAILBOX)) throw new Error('Install this in the company mailbox account (you are ' + MAILBOX + ').');
-  if (/PASTE/.test(MAIL_KEY)) throw new Error('Paste the key from Kaixin into MAIL_KEY first.');
+  if (COMPANY_DOMAIN && MAILBOX.slice(-COMPANY_DOMAIN.length - 1) !== '@' + COMPANY_DOMAIN.toLowerCase()) throw new Error('Install this in the company mailbox account (you are ' + MAILBOX + ').');
+  if (/PASTE/.test(MAIL_KEY)) throw new Error('Paste the key from the OA owner into MAIL_KEY first.');
   uninstall();
   ScriptApp.newTrigger('collect').timeBased().everyMinutes(30).create();
   const res = collect();

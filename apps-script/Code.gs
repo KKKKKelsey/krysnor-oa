@@ -1,8 +1,10 @@
 /**
- * Krysnor OA – backend, step 1 (foundation)
- * -----------------------------------------
- * Paste this whole file into Extensions → Apps Script of the "Krysnor OA Master" sheet,
- * then run setup() once. Safe to run again: it never overwrites data that already exists.
+ * OA – backend (one copy per company)
+ * -----------------------------------
+ * Paste this whole file into Extensions → Apps Script of the company's master sheet and run setup().
+ * A new sheet: the first run only creates Settings — fill in its Company section (COMPANY_NAME at least),
+ * then run setup() again to build everything. Safe to run again: it never overwrites data that already exists.
+ * Nothing in this file names a company, a person or a mailbox: those live in Settings and Users.
  *
  * Nothing about people, roles, project types or folders is hard-coded below except the
  * FIRST-RUN seed values. After setup(), the tabs in the sheet are the only source of truth:
@@ -28,16 +30,28 @@ const SEED = {
     headers: ['key', 'value', 'description'],
     widths: [210, 330, 420],
     rows: [
-      ['OA_NAME', 'Krysnor OA', 'Name shown in the web page header'],
+      // ── Company: fill these in for a new company, then run setup() again ──
+      ['COMPANY_NAME', '', 'REQUIRED. Company name as customers see it (email subjects, Drive folder name)'],
+      ['COMPANY_DOMAIN', '', 'Company email domain, e.g. example.ca (emails to it count as internal)'],
+      ['COMPANY_PHONE', '', 'Main phone number ({company_phone} in email templates)'],
+      ['OA_NAME', '', 'Name shown in the web page header. Blank = COMPANY_NAME + " OA"'],
+      ['ADMIN_EMAIL', '', 'Owner. Always has every permission. Blank = whoever runs setup()'],
+      ['ADMIN_NAME', '', 'Owner\'s first name, used in help text ("Ask … to add you")'],
+      ['MAILBOX_PM', '', 'Project-manager mailbox (customers you already work with). setup() adds it to Mailboxes'],
+      ['MAILBOX_SALES', '', 'Sales mailbox (quotes, follow-ups, new customers). setup() adds it to Mailboxes'],
       ['TIMEZONE', 'America/Toronto', 'All timestamps use this time zone'],
-      ['ADMIN_EMAIL', 'kxli9742@gmail.com', 'Owner. Always has every permission'],
-      ['ROOT_FOLDER_ID', '1AdgKv8zSRLAOX6OmaxorYMHxr2qrABs3', 'Drive: Krysnor Elevator (shared VIEW-ONLY with staff)'],
-      ['SYSTEM_FOLDER_ID', '12KdYlHfaKkD1KPkPcfkVrPtOQd_JK5ww', 'Drive: Krysnor OA System (private, never share)'],
-      ['BACKUP_FOLDER_ID', '1UVGKzUEoQNbGaF0pDWUh8HhaZ6kcPTPY', 'Drive: Krysnor OA System / Backups / Weekly'],
+      ['LOCALE', 'en-CA', 'How the web page writes dates and money (en-CA, en-US, en-GB, zh-CN …)'],
+      ['CURRENCY', 'CAD', 'Currency code for money on the web page (CAD, USD …)'],
+      ['TAX_NAME', 'HST', 'Name of the sales tax shown next to amounts (HST, GST, VAT, Sales tax …)'],
+      ['REGULATOR_NAME', 'TSSA', 'Elevator inspection authority, used in the default project steps, folders and mail rules'],
+      // ── Drive: blank = setup() creates the folders ──
+      ['ROOT_FOLDER_ID', '', 'Drive: company folder (shared VIEW-ONLY with staff). Blank = setup() creates it'],
+      ['SYSTEM_FOLDER_ID', '', 'Drive: OA system folder (private, never share). Blank = setup() creates it'],
+      ['BACKUP_FOLDER_ID', '', 'Drive: system folder / Backups / Weekly. Blank = setup() creates it'],
       ['BACKUP_RETENTION_DAYS', '365', 'Backups older than this many days are moved to Drive trash'],
       ['BACKUP_WEEKDAY', 'MONDAY', 'Day of the weekly backup (MONDAY … SUNDAY)'],
       ['BACKUP_HOUR', '3', 'Hour of the weekly backup, 0-23, in TIMEZONE'],
-      ['INBOX_FOLDER_ID', '1D_7SXY1ceONSGQNl3CKjM6eTC3GHqdAx', 'Drive: 00_Inbox (bids to screen)'],
+      ['INBOX_FOLDER_ID', '', 'Drive: 00_Inbox (bids to screen). Blank = setup() creates it'],
       ['OAUTH_CLIENT_ID', '', 'Filled in step 3 (Google sign-in for the web page)'],
       ['REPORT_ID_PREFIX', 'SR', 'Service report numbers look like SR-2026-0001'],
       ['UNLINKED_REPORTS_FOLDER', '06_Service Reports (no project)', 'Folder inside ROOT for photos of reports not tied to a project'],
@@ -45,7 +59,7 @@ const SEED = {
       ['SITES_IMPORT_SOURCE', 'MAINT', 'Data Source whose maintenance tab feeds Sites and the Maintenance Log'],
       ['SITES_IMPORT_TAB', '{YEAR} Maintenance-Commercial', 'Tab name to import ({YEAR} = this year). Add |{YEAR} Maintenance-Residential to include residential'],
       ['PAYMENT_PLANS', '50/50=50,50|45/45/10=45,45,10', 'Invoice splits offered on a project (name=percentages). Each part is billed at a step you pick'],
-      ['HST_RATE', '13', 'Sales tax % added to maintenance invoice amounts on the This month checklist'],
+      ['HST_RATE', '13', 'Sales tax % (TAX_NAME) added to invoice amounts on the This month and Invoices pages'],
       ['RES_MAINT_ROLES', 'office', 'Who gets residential maintenance reminders and email drafts'],
       ['MAINT_REMINDER_ROLES', 'office', 'Who gets the monthly maintenance reminders and invoice checklist (role_ids, comma-separated)'],
       ['ORDER_STAGES', 'Asked supplier|Supplier quoted|Confirmed with supplier|Pickup / delivery set|Received', 'Steps of a material order, in order, separated by |'],
@@ -67,10 +81,10 @@ const SEED = {
     widths: [120, 180, 460, 70],
     rows: [
       ['admin', 'Administrator', 'Owner of the system. Only role that changes configuration.', true],
-      ['manager', 'Manager / Approver', 'Approves quotes and orders. (Chris)', true],
-      ['technician', 'Technician', 'Writes service reports, uploads site photos. (Duke)', true],
-      ['office', 'Office', 'Screens bids, quotes, orders, maintenance contracts. (Kyle)', true],
-      ['sales', 'Sales', 'Screens new leads, sends quotes and follows up from the sales mailbox. Give it to whoever does sales (Kyle for now).', true],
+      ['manager', 'Manager / Approver', 'Approves quotes and orders; confirms the work and materials on a project', true],
+      ['technician', 'Technician', 'Writes service reports, uploads site photos', true],
+      ['office', 'Office', 'Screens bids, quotes, orders, maintenance contracts', true],
+      ['sales', 'Sales', 'Screens new leads, sends quotes and follows up from the sales mailbox. Give it to whoever does sales.', true],
       ['viewer', 'Viewer', 'Read-only access to everything.', true],
     ],
   },
@@ -96,7 +110,7 @@ const SEED = {
       ['order.edit', 'Open orders, move them through the steps, record part prices and suppliers', true, true, false, true, false, false],
       ['project.view', 'See installation / repair projects and their steps', true, true, true, true, false, true],
       ['project.edit', 'Move projects through their steps and edit them', true, true, false, true, false, true],
-      ['mail.view', 'See mail records collected from connected mailboxes (Kyle has agreed to his)', true, false, false, true, false, true],
+      ['mail.view', 'See mail records collected from connected mailboxes (each mailbox owner agrees to theirs)', true, false, false, true, false, true],
       ['crm.view', 'See CRM contacts, companies, notes and deals', true, true, true, true, true, true],
       ['crm.edit', 'Add and edit CRM contacts and companies, write notes, link them to sites and projects', true, true, false, true, false, true],
     ],
@@ -107,18 +121,14 @@ const SEED = {
     note: 'email = the Google account the person signs in with. role_ids = one or more Roles.role_id, comma-separated. ' +
           'To remove access set active = FALSE (never delete the row: old reports still point to it).',
     rows: [
-      ['kxli9742@gmail.com', 'Kaixin', 'admin', true, '', '', '2026-10-18', 'Owner', false],
-      ['', 'Chris', 'manager,technician', true, '#1F77B4', '', '2026-10-18', 'TODO: Google email'],
-      ['', 'Duke', 'technician', true, '#2CA02C', '', '2026-10-18', 'TODO: Google email'],
-      ['', 'Kyle', 'office', true, '#FF7F0E', '', '2026-10-18', 'TODO: Google email'],
     ],
   },
   'Segments': {
     headers: ['segment_id', 'name', 'folder_id', 'tssa_required'],
     widths: [100, 140, 330, 110],
     rows: [
-      ['COM', 'Commercial', '1i7Te6jv6gphGfnQLQmMSACJqwL8qeCMS', true],
-      ['RES', 'Residential', '1f8Hk19EHMGK9HowwT1GQw0vliNQouFA6', false],
+      ['COM', 'Commercial', '', true],
+      ['RES', 'Residential', '', false],
     ],
   },
   'Project Types': {
@@ -139,19 +149,19 @@ const SEED = {
     rows: [
       ['INS', 1, '01_Bid Documents', 'ALL'], ['INS', 2, '02_Spec Summary', 'ALL'],
       ['INS', 3, '03_Our Quote', 'ALL'], ['INS', 4, '04_Orders & Suppliers', 'ALL'],
-      ['INS', 5, '05_Site Work & Photos', 'ALL'], ['INS', 6, '06_TSSA Reports & Issues', 'COM'],
+      ['INS', 5, '05_Site Work & Photos', 'ALL'], ['INS', 6, '06_{REGULATOR} Reports & Issues', 'COM'],
       ['INS', 7, '07_Contracts & Maintenance', 'ALL'],
       ['REP', 1, '01_Service Reports', 'ALL'], ['REP', 2, '02_Photos', 'ALL'],
-      ['REP', 3, '03_Quote & Invoice', 'ALL'], ['REP', 4, '04_Parts & Orders', 'ALL'], ['REP', 5, '05_TSSA', 'COM'],
+      ['REP', 3, '03_Quote & Invoice', 'ALL'], ['REP', 4, '04_Parts & Orders', 'ALL'], ['REP', 5, '05_{REGULATOR}', 'COM'],
       ['MNT', 1, '01_Contract', 'ALL'], ['MNT', 2, '02_Service Reports', 'ALL'],
-      ['MNT', 3, '03_Photos', 'ALL'], ['MNT', 4, '04_TSSA Reports', 'COM'],
+      ['MNT', 3, '03_Photos', 'ALL'], ['MNT', 4, '04_{REGULATOR} Reports', 'COM'],
     ],
   },
   'Call Types': {
     headers: ['call_type', 'active'],
     widths: [220, 70],
     rows: [['Breakdown', true], ['Entrapment', true], ['Scheduled maintenance', true],
-           ['Callback', true], ['Inspection / TSSA', true], ['Other', true]],
+           ['Callback', true], ['Inspection / {REGULATOR}', true], ['Other', true]],
   },
   'Sites': {
     headers: ['site_id', 'name', 'segment_id', 'address', 'city', 'contact_name', 'contact_phone',
@@ -177,12 +187,12 @@ const SEED = {
     headers: ['type_id', 'order', 'stage', 'segments', 'follow_up_days', 'reminder', 'notes', 'assign_roles', 'form', 'next'],
     widths: [80, 60, 260, 90, 110, 280, 320, 130, 80, 420],
     note: 'Steps of each project type, in order (from the flowchart). segments: ALL, COM or RES. assign_roles: who takes care of ' +
-          'this step (sales, manager = Chris, office = Kyle, technician); they get a checkbox and ticking it moves the project on. ' +
-          'follow_up_days: remind if a project stays in this step longer. form = scope: Chris writes the work and materials. ' +
+          'this step (sales, manager, office, technician); they get a checkbox and ticking it moves the project on. ' +
+          'follow_up_days: remind if a project stays in this step longer. form = scope: the manager writes the work and materials. ' +
           'next: choices instead of "next in order", written  choice→step | choice→step . Edit freely; the OA follows this tab.',
     rows: [
       ['INS', 1, 'Lead screening', 'ALL', 0, 'Screen the lead', 'Sources: property manager lists, referrals, calls. Check need, budget and timing.', 'sales', '', ''],
-      ['INS', 2, 'Site assessment & scope', 'ALL', 3, 'Chris: assess the site and confirm the work and materials', 'Hoistway size, stops, capacity, power, commercial or residential.', 'manager', 'scope', ''],
+      ['INS', 2, 'Site assessment & scope', 'ALL', 3, 'Manager: assess the site and confirm the work and materials', 'Hoistway size, stops, capacity, power, commercial or residential.', 'manager', 'scope', ''],
       ['INS', 3, 'Send quote', 'ALL', 2, 'Send the quote', 'Quote states validity and payment milestones. Sent from the sales mailbox.', 'sales', '', ''],
       ['INS', 4, 'Waiting for reply', 'ALL', 7, 'No reply in 7 days: follow up', 'The OA checks the sales mailbox for a reply.', 'sales', '',
        'Customer replied→Customer confirmed · deposit | No reply→Follow up customer | Lost→Lost / cancelled'],
@@ -193,18 +203,18 @@ const SEED = {
       ['INS', 8, 'Schedule workers', 'ALL', 0, 'Schedule the workers', '', 'office', '', ''],
       ['INS', 9, 'Confirm install date with customer', 'ALL', 0, 'Confirm the installation date with the customer', '', 'office', '', ''],
       ['INS', 10, 'Installation', 'ALL', 0, 'Installation done', '', 'technician', '', ''],
-      ['INS', 11, 'Apply for TSSA inspection', 'COM', 14, 'Apply for the TSSA inspection', 'Record application number and booked date.', 'office', '', ''],
-      ['INS', 12, 'TSSA inspection', 'COM', 0, 'Attend the TSSA inspection', 'Workers attend the inspection.', 'technician', '', ''],
-      ['INS', 13, 'TSSA report received', 'COM', 0, 'TSSA report received: passed?', 'Save the report in 06_TSSA Reports & Issues.', 'office', '',
+      ['INS', 11, 'Apply for {REGULATOR} inspection', 'COM', 14, 'Apply for the {REGULATOR} inspection', 'Record application number and booked date.', 'office', '', ''],
+      ['INS', 12, '{REGULATOR} inspection', 'COM', 0, 'Attend the {REGULATOR} inspection', 'Workers attend the inspection.', 'technician', '', ''],
+      ['INS', 13, '{REGULATOR} report received', 'COM', 0, '{REGULATOR} report received: passed?', 'Save the report in 06_{REGULATOR} Reports & Issues.', 'office', '',
        'Passed→Send maintenance contract | Not passed→Deficiencies to fix'],
-      ['INS', 14, 'Deficiencies to fix', 'COM', 0, 'Write down what has to be fixed', 'List the deficiencies from the TSSA report.', 'technician', '', ''],
+      ['INS', 14, 'Deficiencies to fix', 'COM', 0, 'Write down what has to be fixed', 'List the deficiencies from the {REGULATOR} report.', 'technician', '', ''],
       ['INS', 15, 'Schedule workers for fixes', 'COM', 0, 'Schedule workers for the fixes', '', 'office,manager', '', ''],
-      ['INS', 16, 'Fix deficiencies', 'COM', 0, 'Fixes done', 'Then apply for the TSSA inspection again.', 'technician', '', 'Fixed, apply again→Apply for TSSA inspection'],
+      ['INS', 16, 'Fix deficiencies', 'COM', 0, 'Fixes done', 'Then apply for the {REGULATOR} inspection again.', 'technician', '', 'Fixed, apply again→Apply for {REGULATOR} inspection'],
       ['INS', 17, 'Send maintenance contract', 'COM', 14, 'Send the custom maintenance contract', 'Custom to the equipment and usage.', 'office', '', ''],
       ['INS', 17, 'Send maintenance packages', 'RES', 14, 'Send the maintenance package options', 'Residential: give the customer a few package options.', 'office', '', ''],
       ['INS', 18, 'Maintenance customer', 'ALL', 0, '', 'Closed: now a maintenance customer.', '', '', ''],
       ['REP', 1, 'Request received', 'ALL', 0, 'Look at the repair request', 'Repair / replacement request.', 'office', '', ''],
-      ['REP', 2, 'Site visit & scope', 'ALL', 3, 'Chris: confirm the work and materials', 'What has to be done and which parts.', 'manager', 'scope', ''],
+      ['REP', 2, 'Site visit & scope', 'ALL', 3, 'Manager: confirm the work and materials', 'What has to be done and which parts.', 'manager', 'scope', ''],
       ['REP', 3, 'Send quote', 'ALL', 2, 'Send the repair quote', 'Sent from the sales mailbox.', 'sales', '', ''],
       ['REP', 4, 'Waiting for reply', 'ALL', 7, 'No reply in 7 days: follow up', '', 'sales', '',
        'Customer approved→Parts ordered | No reply→Follow up customer | Lost→Lost / cancelled'],
@@ -239,7 +249,7 @@ const SEED = {
   'Suppliers': {
     headers: ['name', 'contact', 'email', 'phone', 'email_domain', 'parts', 'notes', 'updated_at'],
     widths: [200, 160, 220, 130, 160, 260, 300, 150],
-    note: 'email_domain (e.g. citielevator.com) lets the OA recognise supplier emails in Kyle\'s mailbox as order mail.', rows: [],
+    note: 'email_domain (e.g. citielevator.com) lets the OA recognise supplier emails in the collected mailboxes as order mail.', rows: [],
   },
   'Maintenance Plan': {
     headers: ['site_id', 'address', 'frequency', 'due_months', 'due_months_override', 'basis', 'value', 'qty', 'contact_name',
@@ -256,12 +266,7 @@ const SEED = {
     widths: [220, 120, 300, 70, 150, 90, 420, 120, 110, 120, 110],
     note: 'Mailboxes whose owner installed the read-only collector in their own Google account. key is a password the ' +
           'collector sends; setup() fills it. active = FALSE stops accepting mail from that box.',
-    rows: [
-      ['pm@krysnorelevator.ca', 'Kyle', '', false, '', '', 'Project manager box: customers we already work with. The OA flags emails left unanswered.',
-       'project manager', '', 2, false],
-      ['sales@krysnorelevator.ca', 'Kyle', '', false, '', '', 'Sales box: quotes, follow-ups and outreach to new customers. The OA flags quotes with no reply after 7 days.',
-       'sales', 7, 2, true],
-    ],
+    rows: [],
   },
   'Mail Rules': {
     headers: ['category', 'pattern', 'where', 'gmail_terms', 'create_task', 'assign_roles', 'active', 'notes'],
@@ -277,7 +282,7 @@ const SEED = {
        '{install installation permit "shop drawing"}', false, 'office', true, ''],
       ['Maintenance', '\\b(maintenance|preventive|service call|breakdown|entrap\\w*|stuck|not working|out of service)\\b', 'any',
        '{maintenance "service call" breakdown entrapment stuck "not working" "out of service"}', false, 'office', true, ''],
-      ['Inspection', '\\b(tssa|inspection|deficienc(y|ies))\\b', 'any', '{TSSA inspection deficiency deficiencies}', false, 'office', true, ''],
+      ['Inspection', '\\b({REGULATOR_RE}inspection|deficienc(y|ies))\\b', 'any', '{{REGULATOR} inspection deficiency deficiencies}', false, 'office', true, ''],
       ['Invoice', '\\b(invoice|payment|remittance|overdue|e-?transfer|cheque)\\b', 'any', '{invoice payment remittance overdue e-transfer cheque}', false, 'office', true, ''],
       ['Agreement', '\\b(agreements?|contracts?)\\b', 'any', '{agreement contract "maintenance agreement" filename:agreement filename:proposal filename:estimate filename:quote}', false, 'office', true, 'Agreements and contracts we send (sent-proposal follow-ups)'],
       ['Task', '\\b(urgent|asap|reminder|action required|deadline)\\b', 'any', '{urgent asap reminder "action required" deadline}', false, 'office', true, ''],
@@ -309,12 +314,12 @@ const SEED = {
   'Email Templates': {
     headers: ['template_id', 'subject', 'body', 'notes'],
     widths: [140, 360, 600, 300],
-    note: 'Drafts the OA prepares for Kyle. {first_name} {customer} {address} {month} {package} {frequency} are filled in.',
-    rows: [['RES_MAINT', 'Krysnor Elevator – your home elevator maintenance in {month}',
-      'Hi {first_name},\n\nThis is Kyle from Krysnor Elevator. Your home elevator at {address} is due for its {frequency} maintenance visit in {month}.\n\n' +
+    note: 'Drafts the OA prepares for the office. {first_name} {customer} {address} {month} {package} {frequency} {company} {company_phone} {sender_name} {send_from} are filled in.',
+    rows: [['RES_MAINT', '{company} – your home elevator maintenance in {month}',
+      'Hi {first_name},\n\nThis is {sender_name} from {company}. Your home elevator at {address} is due for its {frequency} maintenance visit in {month}.\n\n' +
       'Could you let us know a few days and times that work for you? The visit takes about one to two hours and includes a full safety check, ' +
-      'lubrication and adjustment.\n\nThank you,\nKyle\nKrysnor Elevator\npm@krysnorelevator.ca',
-      'Residential maintenance reminder. Kyle opens it as a Gmail draft from the This month page, checks it and sends it.']],
+      'lubrication and adjustment.\n\nThank you,\n{sender_name}\n{company}\n{send_from}',
+      'Residential maintenance reminder. The office opens it as a Gmail draft from the This month page, checks it and sends it.']],
   },
   'Mail': {
     headers: ['mail_id', 'thread_id', 'mailbox', 'received_at', 'direction', 'from', 'to', 'subject', 'snippet', 'excerpt', 'categories',
@@ -345,18 +350,18 @@ const SEED = {
     note: 'Company sheets the OA reads every hour (syncSources). tabs = pattern of tab names. parser = table or schedule. ' +
           'roles = role_ids that may see this source in search and calendar (admin always can). last_sync / last_result are written by the system.',
     rows: [
-      ['SCHED', 'K.E Schedule – monthly calendar', '1GAMJ-48KE1d-LWktGPG8i_RXiywHOcDXWnWidrrI9hY',
+      ['SCHED', 'Schedule – monthly calendar', '',
        '^(January|February|March|April|May|June|July|August|September|October|November|December)$', 'schedule',
-       'admin,manager,office,technician', true, 'Technicians see this one', '', ''],
-      ['SCHED_TRACK', 'K.E Schedule – trackers', '1GAMJ-48KE1d-LWktGPG8i_RXiywHOcDXWnWidrrI9hY',
-       '^(RepairsLeadTo Do list|New Installation-Modernization)$', 'table', 'admin,manager,office', true, '', '', ''],
-      ['MAINT', 'Maintenance Record', '1RflhAV5qhghDGzI6HIUgyJE8TO1ba-6a',
-       'Maintenance-(Commercial|Residential)', 'table', 'admin,manager,office', true, 'Excel file, read in memory (read-only)', '', ''],
-      ['INVOICES', 'Overdue invoices', '1RflhAV5qhghDGzI6HIUgyJE8TO1ba-6a', '^Overdue Invoices$', 'table',
-       'admin,manager,office', true, '', '', ''],
-      ['TRACKER', 'Project tracker', '1eRPFFA_s5HmVAoA6W9cOASB-GKGkGIHd',
+       'admin,manager,office,technician', false, 'Technicians see this one. Paste the file id, then set active = TRUE', '', ''],
+      ['SCHED_TRACK', 'Schedule – trackers', '',
+       '^(RepairsLeadTo Do list|New Installation-Modernization)$', 'table', 'admin,manager,office', false, 'Paste the file id, then set active = TRUE', '', ''],
+      ['MAINT', 'Maintenance Record', '',
+       'Maintenance-(Commercial|Residential)', 'table', 'admin,manager,office', false, 'Google Sheet or Excel file (read-only). Paste the file id, then set active = TRUE', '', ''],
+      ['INVOICES', 'Overdue invoices', '', '^Overdue Invoices$', 'table',
+       'admin,manager,office', false, 'Paste the file id, then set active = TRUE', '', ''],
+      ['TRACKER', 'Project tracker', '',
        '^(Quote & Lead follow up|Repair & Service Call|Project follow up|Install Schedule)$', 'table',
-       'admin,manager,office', true, 'Excel file, read in memory (read-only)', '', ''],
+       'admin,manager,office', false, 'Google Sheet or Excel file (read-only). Paste the file id, then set active = TRUE', '', ''],
     ],
   },
   'Pipelines': {
@@ -366,7 +371,7 @@ const SEED = {
           'call_types: blank = every call type, or a comma list. Placeholders: {report_id} {site_name} {call_type} {tech_name}.',
     rows: [
       ['INVOICE_AFTER_REPORT', 'report.create', '', 'Invoice', 'Make invoice for {report_id} · {site_name} ({call_type}, {tech_name})',
-       'office', true, 'Duke/Chris submit a report → Kyle makes the invoice'],
+       'office', true, 'A technician submits a report → the office makes the invoice'],
     ],
   },
   'Tasks': {
@@ -379,7 +384,7 @@ const SEED = {
   'Notifications': {
     headers: ['batch_at', 'role', 'task_id', 'title', 'status_at_batch'],
     widths: [160, 100, 110, 420, 110],
-    note: 'Every morning at 9:00 (Toronto) the open tasks are written here as one batch. The bell in the OA shows the latest ' +
+    note: 'Every morning at 9:00 (TIMEZONE) the open tasks are written here as one batch. The bell in the OA shows the latest ' +
           'batch; "Past notifications" shows older batches.',
     rows: [],
   },
@@ -387,7 +392,7 @@ const SEED = {
     headers: ['site_id', 'address', 'frequency', 'installation_no', 'scheduled_week'].concat(MONTH_ABBR),
     widths: [80, 260, 100, 160, 100, 140, 140, 140, 140, 140, 140, 140, 140, 140, 140, 140, 140],
     note: 'Rebuilt every hour from the company Maintenance Record plus visits found in OA service reports (marked "OA"). ' +
-          'Do not edit here; Kyle can copy cells from this tab into the company sheet.',
+          'Do not edit here; the office can copy cells from this tab into the company sheet.',
     rows: [],
   },
   'Sent Proposals': {
@@ -429,9 +434,11 @@ const SEED = {
 };
 
 const README = [
-  ['Krysnor OA – Master Sheet', ''],
-  ['What this is', 'The single source of truth for the Krysnor internal OA. Staff never edit this sheet; they use the OA web page. Only the owner (Kaixin) edits here.'],
-  ['这是什么', 'Krysnor 内部 OA 的唯一数据来源。员工不直接改这张表，只通过 OA 网页操作。只有 Kaixin 在这里修改。'],
+  ['{OA_NAME} – Master Sheet', ''],
+  ['What this is', 'The single source of truth for {OA_NAME}. Staff never edit this sheet; they use the OA web page. Only the owner ({ADMIN_NAME}) edits here.'],
+  ['这是什么', '{OA_NAME} 的唯一数据来源。员工不直接改这张表，只通过 OA 网页操作。只有 {ADMIN_NAME} 在这里修改。'],
+  ['Company settings', 'Settings → the Company rows at the top: name, domain, mailboxes, time zone, language, currency, tax, inspection authority.'],
+  ['公司设置', 'Settings 表最上面的 Company 几行：公司名、域名、邮箱、时区、语言、货币、税、检验机构。'],
   ['', ''],
   ['Config tabs (you edit)', 'Settings · Roles · Permissions · Users · Segments · Project Types · Folder Templates · Call Types'],
   ['Record tabs (system writes)', 'Sites · Units · Projects · Service Reports · CRM Companies · CRM Contacts · CRM Notes · CRM Links · Audit Log · Backup Log'],
@@ -450,17 +457,17 @@ const README = [
   ['记录只增不改', '维修报告和审计日志不修改。更正 = 新增一条报告，amends_report_id 填原报告编号。'],
   ['Company sheets', 'Data Sources lists the team\'s own sheets. The OA reads them every hour; staff keep working in them as before. roles = who may see each one.'],
   ['公司表格', 'Data Sources 分页列出团队自己的表格。OA 每小时读取一次，大家照常在原表格工作。roles 决定谁能看到。'],
-  ['Invoice reminders', 'Pipelines: when a report comes in, a task is created (e.g. invoice for Kyle). Every day at 9:00 open tasks appear under the bell (!) in the OA.'],
-  ['发票提醒', 'Pipelines：收到报告后自动生成任务（例如 Kyle 开发票）。每天早上 9 点，未完成的任务会出现在 OA 右上角的「!」里。'],
-  ['Removing a site', 'Kyle, Chris and Kaixin can remove a site in the OA. It stays in Sites with archived = TRUE and is never re-imported. Adding the same name again restores it.'],
-  ['删除站点', 'Kyle、Chris、Kaixin 可以在 OA 里移除站点。它会留在 Sites 表里并标记 archived = TRUE，以后不会被重新导入。再次添加同名站点即可恢复。'],
+  ['Invoice reminders', 'Pipelines: when a report comes in, a task is created (e.g. invoice for the office). Every day at 9:00 open tasks appear under the bell (!) in the OA.'],
+  ['发票提醒', 'Pipelines：收到报告后自动生成任务（例如办公室开发票）。每天早上 9 点，未完成的任务会出现在 OA 右上角的「!」里。'],
+  ['Removing a site', 'People with site.create can remove a site in the OA. It stays in Sites with archived = TRUE and is never re-imported. Adding the same name again restores it.'],
+  ['删除站点', '有 site.create 权限的人可以在 OA 里移除站点。它会留在 Sites 表里并标记 archived = TRUE，以后不会被重新导入。再次添加同名站点即可恢复。'],
   ['Deleting a report', 'People with report.delete delete from the OA with a reason; it is listed in Report Deletions and hidden. Remove that row to restore it.'],
   ['删除报告', '有 report.delete 权限的人在 OA 里删除并写原因，记录在 Report Deletions 分页，OA 里不再显示。删掉那一行即可恢复。'],
   ['Backups', 'Every week (Settings: BACKUP_WEEKDAY / BACKUP_HOUR) a copy of this sheet goes to Backups/Weekly. Copies older than BACKUP_RETENTION_DAYS go to Drive trash (recoverable for 30 days).'],
   ['备份', '每周自动复制这张表到 Backups/Weekly。超过 BACKUP_RETENTION_DAYS 天的备份移到 Drive 回收站（30 天内可恢复）。'],
 ];
 
-const BACKUP_NAME_PREFIX = 'Krysnor OA Master backup ';
+function backupPrefix_() { return oaName_() + ' Master backup '; }
 const TEXT_COLUMNS = ['report_id', 'project_id', 'site_id', 'unit_id', 'arrived', 'left', 'contact_phone', 'phone', 'task_id', 'ref_id',
                       'installation_no', 'scheduled_week', 'contract_expiry',
                       'client_id', 'amends_report_id', 'folder_id', 'file_id', 'order_id', 'price_id', 'part_no', 'mail_id',
@@ -471,15 +478,26 @@ const TEXT_COLUMNS = ['report_id', 'project_id', 'site_id', 'unit_id', 'arrived'
 
 function setup() {
   const ss = SpreadsheetApp.getActive();
+  buildTabs_(ss, ['Settings']);
+  fillCompanyFromExisting_();
+  const s0 = getSettings_();
+  if (!String(s0.COMPANY_NAME || '').trim()) {
+    // A brand-new sheet: ask for the company details before building anything else.
+    markRequiredSettings_(['COMPANY_NAME', 'COMPANY_DOMAIN', 'ADMIN_NAME', 'MAILBOX_PM', 'MAILBOX_SALES', 'TIMEZONE', 'LOCALE', 'CURRENCY', 'TAX_NAME', 'HST_RATE', 'REGULATOR_NAME']);
+    Logger.log('Step 1 of 2: open the Settings tab and fill in the yellow Company rows (COMPANY_NAME is required), then run setup() again.');
+    return 'Fill in the Company rows in Settings, then run setup() again.';
+  }
+  TZ_MEMO_ = '';
   buildTabs_(ss);
+  installCompany_();
   const s = getSettings_();
-  ss.setSpreadsheetTimeZone(s.TIMEZONE || 'America/Toronto');
+  ss.setSpreadsheetTimeZone(tz_());
   const folders = setupFolders();
   installBackupTrigger_();
   installSyncTrigger_();
   installNotificationTrigger_();
   installMailQueueTrigger_();
-  addMissingSeedRows_('Mailboxes', 'mailbox');
+  addCompanyMailboxes_();
   addMissingSeedRows_('Roles', 'role_id');
   addMissingSeedRows_('Mail Rules', 'category');
   fillRoleColumn_('sales');
@@ -489,8 +507,8 @@ function setup() {
   protectAllTabs_(ss);
   audit_(Session.getEffectiveUser().getEmail(), 'setup', ss.getName(),
          'Tabs checked; folders ensured: ' + folders.length + '; weekly backup trigger installed');
-  Logger.log('Krysnor OA setup finished. Next: fill in the Google emails for Chris, Duke and Kyle ' +
-             'in the Users tab, then run checkSetup().');
+  Logger.log(oaName_() + ' setup finished. Next: in Users, add each person\'s Google email, role_ids and active = TRUE, ' +
+             'then run checkSetup() to verify.' + (s.ROOT_FOLDER_ID ? '' : ''));
 }
 
 /** Gives each mailbox a random key (a password the collector in that person's account sends with the mail). */
@@ -503,24 +521,27 @@ function fillMailboxKeys_() {
   });
 }
 
-function buildTabs_(ss) {
+function buildTabs_(ss, only) {
   // README first
   let readme = ss.getSheetByName('README');
-  if (!readme) {
+  if (!readme && !only) {
     readme = ss.insertSheet('README', 0);
-    readme.getRange(1, 1, README.length, 2).setValues(README);
+    const prof = profile_();
+    readme.getRange(1, 1, README.length, 2).setValues(README.map(function (r) { return r.map(function (v) { return fillTokens_(v, prof); }); }));
     readme.getRange('A1').setFontSize(14).setFontWeight('bold');
     readme.getRange(2, 1, README.length - 1, 1).setFontWeight('bold');
     readme.setColumnWidth(1, 230); readme.setColumnWidth(2, 900);
     readme.getRange(1, 2, README.length, 1).setWrap(true);
   }
   Object.keys(SEED).forEach(function (name) {
+    if (only && only.indexOf(name) < 0) return;
     const def = SEED[name];
+    const rowsIn = (name === 'Settings' || name === 'Permissions') ? def.rows : seedRows_(name);
     let sh = ss.getSheetByName(name);
     if (!sh) sh = ss.insertSheet(name);
     if (sh.getLastRow() === 0) {
       sh.getRange(1, 1, 1, def.headers.length).setValues([def.headers]);
-      if (def.rows.length) sh.getRange(2, 1, def.rows.length, def.headers.length).setValues(def.rows);
+      if (rowsIn.length) sh.getRange(2, 1, rowsIn.length, def.headers.length).setValues(rowsIn);
     } else {
       // Upgrade: add any column introduced by a newer version of this script, at the end.
       const have = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
@@ -528,11 +549,11 @@ function buildTabs_(ss) {
         if (have.indexOf(h) < 0) { sh.getRange(1, have.length + 1).setValue(h); have.push(h); }
       });
       if (name === 'Settings' || name === 'Permissions') {
-        // Upgrade: add new keys / permissions without touching values Kaixin already changed.
+        // Upgrade: add new keys / permissions without touching values the owner already changed.
         const keys = sh.getRange(1, 1, sh.getLastRow(), 1).getValues().map(function (r) { return String(r[0]).trim(); });
         def.rows.forEach(function (r) {
           if (keys.indexOf(r[0]) >= 0) return;
-          // Match by column name, so extra role columns Kaixin added later stay aligned.
+          // Match by column name, so extra role columns the owner added later stay aligned.
           sh.appendRow(have.map(function (h) { const i = def.headers.indexOf(h); return i >= 0 ? r[i] : ''; }));
         });
       }
@@ -548,6 +569,7 @@ function buildTabs_(ss) {
       if (TEXT_COLUMNS.indexOf(String(h).trim()) >= 0) sh.getRange(2, i + 1, sh.getMaxRows() - 1, 1).setNumberFormat('@');
     });
   });
+  if (only) return;
   // Highlight the users whose email still needs filling in
   const users = ss.getSheetByName('Users');
   const emails = users.getRange(2, 1, Math.max(users.getLastRow() - 1, 1), 1).getValues();
@@ -566,7 +588,7 @@ function protectAllTabs_(ss) {
   ss.getSheets().forEach(function (sh) {
     const existing = sh.getProtections(SpreadsheetApp.ProtectionType.SHEET);
     const p = existing.length ? existing[0] : sh.protect();
-    p.setDescription('Krysnor OA: owner-only. Staff use the OA web page.');
+    p.setDescription(oaName_() + ': owner-only. Staff use the OA web page.');
     p.removeEditors(p.getEditors());
     if (p.canDomainEdit()) p.setDomainEdit(false);
   });
@@ -699,9 +721,9 @@ function isInsideRoot_(folderId) {
   return false;
 }
 
-/** Lists a Drive folder for the OA page, including files Kaixin dropped in by hand. */
+/** Lists a Drive folder for the OA page, including files the owner dropped in by hand. */
 function listFolder_(folderId) {
-  if (!isInsideRoot_(folderId)) throw new Error('Folder is outside the Krysnor Elevator folder.');
+  if (!isInsideRoot_(folderId)) throw new Error('Folder is outside the ' + companyName_() + ' folder.');
   const folder = DriveApp.getFolderById(folderId);
   const out = { id: folderId, name: folder.getName(), folders: [], files: [] };
   const fs = folder.getFolders();
@@ -726,7 +748,7 @@ function installBackupTrigger_() {
   const s = getSettings_();
   const day = ScriptApp.WeekDay[String(s.BACKUP_WEEKDAY || 'MONDAY').toUpperCase()] || ScriptApp.WeekDay.MONDAY;
   ScriptApp.newTrigger('weeklyBackup').timeBased()
-    .onWeekDay(day).atHour(Number(s.BACKUP_HOUR || 3)).inTimezone(s.TIMEZONE || 'America/Toronto')
+    .onWeekDay(day).atHour(Number(s.BACKUP_HOUR || 3)).inTimezone(tz_())
     .create();
 }
 
@@ -737,8 +759,8 @@ function weeklyBackup() {
   const now = new Date();
   try {
     const folder = DriveApp.getFolderById(s.BACKUP_FOLDER_ID);
-    const stamp = Utilities.formatDate(now, s.TIMEZONE || 'America/Toronto', 'yyyy-MM-dd');
-    const copy = DriveApp.getFileById(ss.getId()).makeCopy(BACKUP_NAME_PREFIX + stamp, folder);
+    const stamp = Utilities.formatDate(now, tz_(), 'yyyy-MM-dd');
+    const copy = DriveApp.getFileById(ss.getId()).makeCopy(backupPrefix_() + stamp, folder);
 
     const keepDays = Number(s.BACKUP_RETENTION_DAYS || 365);
     const cutoff = new Date(now.getTime() - keepDays * 24 * 3600 * 1000);
@@ -746,7 +768,7 @@ function weeklyBackup() {
     const files = folder.getFiles();
     while (files.hasNext()) {
       const f = files.next();
-      if (f.getName().indexOf(BACKUP_NAME_PREFIX) === 0 && f.getDateCreated() < cutoff) {
+      if (f.getName().indexOf(backupPrefix_()) === 0 && f.getDateCreated() < cutoff) {
         f.setTrashed(true);
         trashed++;
       }
@@ -754,7 +776,7 @@ function weeklyBackup() {
     log.appendRow([now, copy.getName(), copy.getId(), trashed, 'OK']);
   } catch (err) {
     log.appendRow([now, '', '', 0, 'FAILED: ' + err.message]);
-    MailApp.sendEmail(s.ADMIN_EMAIL, 'Krysnor OA backup FAILED', 'The weekly backup failed:\n\n' + err.stack);
+    MailApp.sendEmail(s.ADMIN_EMAIL, oaName_() + ' backup FAILED', 'The weekly backup failed:\n\n' + err.stack);
     throw err;
   }
 }
@@ -788,18 +810,18 @@ function json_(obj) {
 }
 
 function doGet() {
-  return json_({ ok: true, name: getSettings_().OA_NAME || 'Krysnor OA' });
+  return json_({ ok: true, name: oaName_() });
 }
 
 function doPost(e) {
   let email = '';
   try {
     const body = JSON.parse(e.postData.contents);
-    // The read-only mail collector in Kyle's own account has no Google sign-in here: it sends its mailbox key instead.
+    // The read-only mail collector in a mailbox owner's own account has no Google sign-in here: it sends its mailbox key instead.
     if (body.action === 'ingestMail' || body.action === 'mailConfig' || body.action === 'threadStatus') return json_({ ok: true, data: ingestMail_(body) });
     email = verifyIdToken_(body.token);
     const user = getUser_(email);
-    if (!user) throw new Error('This Google account has no access to Krysnor OA. Ask Kaixin to add you.');
+    if (!user) throw new Error('This Google account has no access to ' + oaName_() + '. Ask ' + adminName_() + ' to add you.');
     const handler = ACTIONS[body.action];
     if (!handler) throw new Error('Unknown action: ' + body.action);
     if (handler.permission && !can_(user, handler.permission)) {
@@ -824,7 +846,7 @@ function appendRecord_(sheetName, obj) {
 
 /** Next id like SR-2026-0007. Call while holding the script lock. */
 function nextId_(sheetName, column, prefix, digits) {
-  const year = Utilities.formatDate(new Date(), getSettings_().TIMEZONE || 'America/Toronto', 'yyyy');
+  const year = Utilities.formatDate(new Date(), tz_(), 'yyyy');
   const stem = prefix + '-' + year + '-';
   let max = 0;
   readTable_(sheetName).forEach(function (r) {
@@ -862,7 +884,7 @@ function reportPhotoFolder_(projectId, reportId) {
     }
     return ensureFolder_(target || pf, reportId);
   }
-  const year = Utilities.formatDate(new Date(), s.TIMEZONE || 'America/Toronto', 'yyyy');
+  const year = Utilities.formatDate(new Date(), tz_(), 'yyyy');
   const base = ensureFolder_(DriveApp.getFolderById(s.ROOT_FOLDER_ID), s.UNLINKED_REPORTS_FOLDER || '06_Service Reports (no project)');
   return ensureFolder_(ensureFolder_(base, year), reportId);
 }
@@ -1026,7 +1048,7 @@ const ACTIONS = {
     permission: null,
     run: function (user) {
       const s = getSettings_();
-      return { user: user, oaName: s.OA_NAME, rootFolderId: s.ROOT_FOLDER_ID };
+      return { user: user, oaName: oaName_(), rootFolderId: s.ROOT_FOLDER_ID, company: companyProfile_() };
     },
   },
   bootstrap: {
@@ -1034,9 +1056,10 @@ const ACTIONS = {
     permission: 'view.all',
     run: function () {
       return {
+        company: companyProfile_(),
         users: readTable_('Users').filter(function (u) { return isTrue_(u.active) && u.email; })
           .map(function (u) {
-            // Not on the calendar: on_calendar = FALSE, or left blank for someone who is only admin (Kaixin).
+            // Not on the calendar: on_calendar = FALSE, or left blank for someone who is only admin (the owner).
             const onCal = String(u.on_calendar).trim() === '' ? String(u.role_ids).trim() !== 'admin' : isTrue_(u.on_calendar);
             return { name: u.display_name, roles: u.role_ids, color: onCal ? u.calendar_color : '', on_calendar: onCal };
           }),
@@ -1136,7 +1159,7 @@ const ACTIONS = {
     },
   },
   confirmScope: {
-    // Chris: what has to be done and which materials, before Kyle prepares the quote.
+    // Manager: what has to be done and which materials, before the office prepares the quote.
     permission: 'project.edit',
     run: function (user, p) { return confirmScope_(user, p); },
   },
@@ -1155,7 +1178,7 @@ const ACTIONS = {
   },
   invoices: { permission: 'view.all', run: function (user) { return invoicesFor_(user); } },
   editTime: {
-    // Only the admin (Kaixin) can correct a recorded time. Every change is written to the Audit Log with the old value.
+    // Only the admin (the owner) can correct a recorded time. Every change is written to the Audit Log with the old value.
     permission: 'view.all',
     run: function (user, p) { return editTime_(user, p); },
   },
@@ -1168,10 +1191,10 @@ const ACTIONS = {
     run: function (user, p) { return createSite_(user, p); },
   },
   uploadFile: {
-    // Files land in Drive; anything Kaixin drops into the same folders shows up in the OA too.
+    // Files land in Drive; anything the owner drops into the same folders shows up in the OA too.
     permission: 'file.upload',
     run: function (user, p) {
-      if (!p.folderId || !isInsideRoot_(p.folderId)) throw new Error('That folder is outside the Krysnor Elevator folder.');
+      if (!p.folderId || !isInsideRoot_(p.folderId)) throw new Error('That folder is outside the ' + companyName_() + ' folder.');
       const saved = saveUpload_(DriveApp.getFolderById(p.folderId), p);
       audit_(user.email, 'file.upload', saved.id, saved.name);
       return saved;
@@ -1228,7 +1251,7 @@ const NOT_STREET = ['am', 'pm', 'weeks', 'week', 'days', 'day', 'stops', 'stop',
 
 function cellText_(v) {
   if (v === null || v === undefined) return '';
-  if (v instanceof Date) return isNaN(v) ? '' : Utilities.formatDate(v, 'America/Toronto', 'yyyy-MM-dd');
+  if (v instanceof Date) return isNaN(v) ? '' : Utilities.formatDate(v, tz_(), 'yyyy-MM-dd');
   return String(v).replace(/\r/g, '').trim();
 }
 
@@ -1309,7 +1332,7 @@ function makeItem_(ctx, row, fields) {
     key: addrKey_(fields.addr || '') || addrKey_(fields.title) || addrKey_(text),
     text: text,
     people: c.people, phones: c.phones, emails: c.emails,
-    date: fields.date ? Utilities.formatDate(fields.date, 'America/Toronto', 'yyyy-MM-dd') : '',
+    date: fields.date ? Utilities.formatDate(fields.date, tz_(), 'yyyy-MM-dd') : '',
     // Year the row belongs to: its date, else a year in the tab name ("2025 Maintenance-Commercial").
     year: fields.date ? String(fields.date.getFullYear()) : (((/\b(20\d{2})\b/.exec(ctx.tab) || [])[1]) || ''),
     person: fields.person || '',
@@ -1615,7 +1638,7 @@ function syncSources() {
         result = 'FAILED: ' + err.message;
       }
       report.push(src.source_id + ': ' + count + ' items · ' + result);
-      // Write the status next to the source so Kaixin can see it in the sheet.
+      // Write the status next to the source so the owner can see it in the sheet.
       const r = i + 2;
       const put = function (name, value) { const c = headers.indexOf(name); if (c >= 0) sheet.getRange(r, c + 1).setValue(value); };
       put('last_sync', started); put('last_result', count + ' items · ' + result);
@@ -1624,14 +1647,14 @@ function syncSources() {
     const writeLock = LockService.getScriptLock();
     writeLock.waitLock(120000);
     try {
-    // Fixed maintenance addresses → Sites / Units, and the Maintenance Log tab (both in Kaixin's sheet only).
+    // Fixed maintenance addresses → Sites / Units, and the Maintenance Log tab (both in the owner's sheet only).
     if (importRaw.length) {
       try {
         let contracts = [];
         importRaw.forEach(function (v) { contracts = contracts.concat(parseMaintenanceContracts_(v)); });
         const res = importMaintenanceSites_(contracts);
         const log = buildMaintenanceLog_(contracts, year);
-        tables.push({ src: String(settings.SITES_IMPORT_SOURCE || 'MAINT'), source: 'Krysnor OA', tab: 'Maintenance Log ' + year + ' (with OA reports)',
+        tables.push({ src: String(settings.SITES_IMPORT_SOURCE || 'MAINT'), source: oaName_(), tab: 'Maintenance Log ' + year + ' (with OA reports)',
                       url: '', native: false, gid: 0, headers: log.header,
                       rows: log.rows.map(function (r, i) { return { r: i + 2, c: r.map(cellText_) }; }) });
         report.push('Sites: ' + res.added + ' added, ' + res.updated + ' updated, ' + res.units + ' units added; maintenance log ' + log.rows.length + ' rows');
@@ -1847,7 +1870,7 @@ function importMaintenanceSites_(contracts) {
       added++;
     } else {
       siteId = hit.site.site_id;
-      if (isTrue_(hit.site.archived)) return;          // removed by Kyle / Chris / Kaixin: never bring it back
+      if (isTrue_(hit.site.archived)) return;          // removed in the OA: never bring it back
       const imported = String(hit.site.source || '') === 'Maintenance Record';
       const changes = {};
       Object.keys(fields).forEach(function (k) {
@@ -1877,7 +1900,7 @@ function importMaintenanceSites_(contracts) {
 
 /**
  * Rebuilds the "Maintenance Log" tab: one row per contract, one column per month. Each month shows what the
- * company sheet says, plus visits found in OA service reports (marked "OA"). Kyle can copy it back as needed.
+ * company sheet says, plus visits found in OA service reports (marked "OA"). the office can copy it back as needed.
  */
 function buildMaintenanceLog_(contracts, year) {
   const sh = SpreadsheetApp.getActive().getSheetByName('Maintenance Log');
@@ -1906,7 +1929,7 @@ function buildMaintenanceLog_(contracts, year) {
   sh.clearContents();
   sh.getRange(1, 1, 1, header.length).setValues([header]);
   if (rows.length) sh.getRange(2, 1, rows.length, header.length).setValues(rows);
-  sh.getRange(1, header.length + 2).setValue('Built ' + Utilities.formatDate(new Date(), getSettings_().TIMEZONE || 'America/Toronto', 'yyyy-MM-dd HH:mm') +
+  sh.getRange(1, header.length + 2).setValue('Built ' + Utilities.formatDate(new Date(), tz_(), 'yyyy-MM-dd HH:mm') +
     ' from the company Maintenance Record + OA service reports. Rebuilt every hour — edit the company sheet, not this tab.');
   return { header: header, rows: rows };
 }
@@ -2008,7 +2031,7 @@ function installNotificationTrigger_() {
     .filter(function (t) { return t.getHandlerFunction() === 'refreshNotifications'; })
     .forEach(function (t) { ScriptApp.deleteTrigger(t); });
   ScriptApp.newTrigger('refreshNotifications').timeBased().everyDays(1).atHour(9).nearMinute(0)
-    .inTimezone(getSettings_().TIMEZONE || 'America/Toronto').create();
+    .inTimezone(tz_()).create();
 }
 
 /** Latest batch (or the batch asked for) for this person's roles, with each task's current status. */
@@ -2052,7 +2075,7 @@ function notificationsFor_(user, batchAt) {
     });
     g.total = same.length;
     g.open = same.filter(function (t) { return String(t.status) === 'open'; }).length;
-    const label = Utilities.formatDate(new Date(g.month + '-15T12:00:00'), 'America/Toronto', 'MMMM');
+    const label = Utilities.formatDate(new Date(g.month + '-15T12:00:00'), tz_(), 'MMMM');
     g.status = g.open ? 'open' : 'done';
     g.title = g.kind === 'MNT' ? label + ' maintenance: ' + g.open + ' of ' + g.total + ' sites not done yet'
             : g.kind === 'MEML' ? label + ' residential booking emails: ' + g.open + ' of ' + g.total + ' not sent yet'
@@ -2074,7 +2097,7 @@ function completeTask_(user, p) {
     if (String(t.status) === 'done') return { task_id: t.task_id, status: 'done' };
     const sh = SpreadsheetApp.getActive().getSheetByName('Tasks');
     const head = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
-    if (/^PSTEP:/.test(String(t.key)) && String(t.key).split(':')[3] === 'scope') throw new Error('Chris confirms this on the project page (work to do and materials).');
+    if (/^PSTEP:/.test(String(t.key)) && String(t.key).split(':')[3] === 'scope') throw new Error(roleNames_('manager', 'The manager') + ' confirms this on the project page (work to do and materials).');
     if (/^PSTEP:/.test(String(t.key)) && String(t.key).split(':')[3] === 'choice') throw new Error('This step has choices (e.g. passed / not passed): pick one on the project page.');
     writeRowFields_(sh, head, i + 2, { status: 'done', done_at: new Date(), done_by: user.email, note: clean_(p.note, 500) });
     audit_(user.email, 'task.done', t.task_id, t.title + (p.note ? ' · ' + p.note : ''));
@@ -2090,7 +2113,13 @@ function completeTask_(user, p) {
 
 const ORDER_STAGES_DEFAULT = 'Asked supplier|Supplier quoted|Confirmed with supplier|Pickup / delivery set|Received';
 
-function tz_() { return getSettings_().TIMEZONE || 'America/Toronto'; }
+let TZ_MEMO_ = '';
+function tz_() {
+  if (TZ_MEMO_) return TZ_MEMO_;
+  const t = String(getSettings_().TIMEZONE || '').trim();
+  if (t) return (TZ_MEMO_ = t);
+  try { return Session.getScriptTimeZone(); } catch (e) { return 'UTC'; }
+}
 function ym_(d) { return Utilities.formatDate(d || new Date(), tz_(), 'yyyy-MM'); }
 function day_(d) { return d ? Utilities.formatDate(d instanceof Date ? d : new Date(d), tz_(), 'yyyy-MM-dd') : ''; }
 function headersOf_(name) {
@@ -2184,7 +2213,7 @@ const FREQ_STEP = { 'Monthly': 1, 'Quarterly': 3, 'Semi-annual': 6, 'Annual': 12
 
 /**
  * Which months each contract is due. Monthly = every month. Quarterly / semi-annual: the months that match the
- * visits recorded this year and last year (e.g. Mar-Jun-Sep-Dec). Kaixin can override in due_months_override.
+ * visits recorded this year and last year (e.g. Mar-Jun-Sep-Dec). the owner can override in due_months_override.
  */
 function maintenancePlan_(byYear, year) {
   const now = byYear[year] || [];
@@ -2212,7 +2241,7 @@ function maintenancePlan_(byYear, year) {
   });
 }
 
-/** Rewrites the "Maintenance Plan" tab, keeping Kaixin's due_months_override per address. */
+/** Rewrites the "Maintenance Plan" tab, keeping the owner's due_months_override per address. */
 function writeMaintenancePlan_(plan, year) {
   const sh = SpreadsheetApp.getActive().getSheetByName('Maintenance Plan');
   const sites = readTable_('Sites');
@@ -2260,7 +2289,7 @@ function ensureMonthTasks_(when) {
   const s = getSettings_();
   const roles = s.MAINT_REMINDER_ROLES || 'office';
   const hst = Number(s.HST_RATE || 13);
-  // Sites Kyle / Chris / Kaixin removed from the Sites list get no more reminders.
+  // Sites people in the OA removed from the Sites list get no more reminders.
   const removed = {};
   readTable_('Sites').forEach(function (x) { if (isTrue_(x.archived)) removed[addrKey_(x.address || x.name)] = true; });
   const plan = readTable_('Maintenance Plan').filter(function (r) { return Number(r.year) === Number(ym.slice(0, 4)) && !removed[addrKey_(r.address)]; });
@@ -2282,7 +2311,7 @@ function ensureMonthTasks_(when) {
                  title: monthName + ' maintenance due · ' + r.address + ' (' + r.frequency + ')', link: r.site_id ? '#/sites/' + r.site_id : '' });
     tasks.push({ key: 'MINV:' + ym + ':' + id, type: 'Maintenance invoice', month: ym, site_id: r.site_id, assign_roles: roles, amount: value,
                  title: 'Send ' + monthName + ' maintenance invoice · ' + r.address +
-                        (value !== '' ? ' · $' + value.toFixed(2) + ' + HST ' + hst + '% = $' + (value * (1 + hst / 100)).toFixed(2) : ''),
+                        (value !== '' ? ' · ' + moneyText_(value) + ' + ' + taxName_() + ' ' + hst + '% = ' + moneyText_(value * (1 + hst / 100)) : ''),
                  link: '#/month' });
   });
   const made = ensureTasks_(tasks);
@@ -2311,7 +2340,9 @@ function monthChecklist_(user, ym) {
   const tpl = readTable_('Email Templates').filter(function (x) { return x.template_id === 'RES_MAINT'; })[0] || {};
   const box = readTable_('Mailboxes').filter(function (b) { return /project/i.test(String(b.purpose)); })[0] || {};
   return { month: month, months: months.length ? months : [month], hst: Number(getSettings_().HST_RATE || 13), items: items,
-           template: { subject: tpl.subject || '', body: String(tpl.body || '').replace(/\\n/g, '\n') }, sendFrom: box.mailbox || 'pm@krysnorelevator.ca' };
+           template: { subject: tpl.subject || '', body: String(tpl.body || '').replace(/\\n/g, '\n') }, sendFrom: box.mailbox || mailboxFor_('project manager') || mailboxFor_(''),
+           fill: { company: companyName_(), company_phone: String(getSettings_().COMPANY_PHONE || ''), send_from: box.mailbox || mailboxFor_('project manager') || mailboxFor_(''),
+                   sender_name: String(box.owner_name || '').trim() || roleNames_('office', companyName_()) } };
 }
 
 // ───────── orders, supplier quotes and part prices ─────────
@@ -2496,10 +2527,10 @@ function projectStepCore_(user, p) {
     const names = projectStages_(pr.type_id, pr.segment_id).map(function (s) { return s.stage; }).concat(['Lost / cancelled']);
     const stage = clean_(p.stage, 80);
     if (stage && names.indexOf(stage) < 0) throw new Error('Unknown stage: ' + stage);
-    // Every quote goes to Chris first: no one but the admin moves past his step before the work and materials are written.
+    // Every quote goes to the manager first: no one but the admin moves past that step before the work and materials are written.
     if (stage && stage !== 'Lost / cancelled' && !user.isAdmin && !String(pr.scope || '').trim() && !p.scopeConfirmed) {
       const sc = projectStages_(pr.type_id, pr.segment_id).filter(function (x) { return String(x.form) === 'scope'; })[0];
-      if (sc && names.indexOf(stage) > names.indexOf(sc.stage)) throw new Error('Chris needs to confirm the work and materials first (step "' + sc.stage + '").');
+      if (sc && names.indexOf(stage) > names.indexOf(sc.stage)) throw new Error(roleNames_('manager', 'The manager') + ' needs to confirm the work and materials first (step "' + sc.stage + '").');
     }
     const fields = { updated_at: new Date() };
     if (stage && stage !== pr.stage) {
@@ -2543,7 +2574,7 @@ function ensureProjectTasks_() {
   return ensureTasks_(tasks).length;
 }
 
-// ───────── mail from Kyle's mailbox (sent by the read-only collector in his own account) ─────────
+// ───────── mail from a mailbox (sent by the read-only collector in the owner's own account) ─────────
 
 /** Called by the collector script. Not signed in with Google: checked with the mailbox key instead. */
 function ingestMail_(body) {
@@ -2708,7 +2739,7 @@ function updateRecordIf_(name, col, id, fields) { try { return updateRecord_(nam
 
 /** One payload for the Orders / Prices / Projects / Mail pages (cached on the phone for offline viewing). */
 function workData_(user) {
-  const out = { stages: { order: orderStages_() }, permissions: user.permissions };
+  const out = { stages: { order: orderStages_() }, permissions: user.permissions, company: companyProfile_() };
   const iso = function (r) { const o = {}; Object.keys(r).forEach(function (k) { o[k] = r[k] instanceof Date ? r[k].toISOString() : r[k]; }); return o; };
   if (can_(user, 'order.view')) {
     out.orders = readTable_('Orders').map(iso);
@@ -2782,7 +2813,7 @@ function ensureProjectInvoices_(pr) {
     tasks.push({ key: 'PINV:' + pr.project_id + ':' + (i + 1), type: 'Project invoice', assign_roles: getSettings_().PROJECT_REMINDER_ROLES || 'office',
                  ref_id: pr.project_id, site_id: pr.site_id || '', link: '#/projects/' + pr.project_id, amount: value ? amt : '',
                  title: 'Invoice ' + (i + 1) + ' of ' + plan.length + ' (' + x.pct + '%) · ' + pr.title +
-                        (value ? ' · $' + amt.toFixed(2) + ' + HST ' + hst + '% = $' + (amt * (1 + hst / 100)).toFixed(2) : '') });
+                        (value ? ' · ' + moneyText_(amt) + ' + ' + taxName_() + ' ' + hst + '% = ' + moneyText_(amt * (1 + hst / 100)) : '') });
   });
   return ensureTasks_(tasks).length;
 }
@@ -2801,7 +2832,7 @@ function invoicesFor_(user) {
              done_at: iso(t.done_at), done_by: t.done_by, note: t.note, link: t.link, ref_id: t.ref_id, site_id: t.site_id,
              month: t.month || String(iso(t.created_at) || '').slice(0, 7) };
   });
-  // Parts of a project's payment plan whose step has not been reached yet (office, Chris and admin only).
+  // Parts of a project's payment plan whose step has not been reached yet (office, manager and admin only).
   if (can_(user, 'order.view')) {
     const have = {};
     readTable_('Tasks').forEach(function (t) { if (t.key) have[t.key] = true; });
@@ -2858,7 +2889,7 @@ function editTime_(user, p) {
   });
 }
 
-// ═════════════════════════════ Step 6: Chris confirms quotes · sales / PM mailbox checks · residential maintenance ═════════════════════════════
+// ═════════════════════════════ Step 6: the manager confirms quotes · sales / PM mailbox checks · residential maintenance ═════════════════════════════
 
 /** Residential rows: frequency from the package ("Silver 2", "(No Contract) 1 visit", "4 visits"). */
 function residentialFrequency_(c) {
@@ -2876,7 +2907,7 @@ function addMissingSeedRows_(name, keyCol) {
   const head = headersOf_(name);
   const have = readTable_(name).map(function (r) { return norm_(r[keyCol]); });
   const def = SEED[name];
-  def.rows.forEach(function (r) {
+  seedRows_(name).forEach(function (r) {
     const rec = {}; def.headers.forEach(function (h, i) { rec[h] = r[i]; });
     if (have.indexOf(norm_(rec[keyCol])) >= 0) {
       // Fill new columns on an existing row only where they are still blank.
@@ -2891,19 +2922,19 @@ function addMissingSeedRows_(name, keyCol) {
   });
 }
 
-/** Version 2 of the project steps (Chris confirms scope & materials; Kyle's checkboxes). Runs once. */
+/** Version 2 of the project steps (the manager confirms scope & materials; office checkboxes). Runs once. */
 function migrateProjectStages_() {
   const props = PropertiesService.getScriptProperties();
   if (props.getProperty('STAGES_VERSION') === '3') return;
   const sh = SpreadsheetApp.getActive().getSheetByName('Project Stages');
-  const newNames = SEED['Project Stages'].rows.map(function (r) { return r[0] + '|' + r[2]; });
+  const newNames = seedRows_('Project Stages').map(function (r) { return r[0] + '|' + r[2]; });
   const stuck = readTable_('Projects').filter(function (p) { return String(p.status) !== 'closed' && p.stage && newNames.indexOf(p.type_id + '|' + p.stage) < 0; });
   if (stuck.length) { Logger.log('Project steps not replaced: open projects use old steps (' + stuck.map(function (p) { return p.project_id; }).join(', ') + ')'); return; }
   {
     const head = headersOf_('Project Stages');
     if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, head.length).clearContent();
     const def = SEED['Project Stages'];
-    const out = def.rows.map(function (r) { return head.map(function (h) { const i = def.headers.indexOf(h); return i >= 0 ? r[i] : ''; }); });
+    const out = seedRows_('Project Stages').map(function (r) { return head.map(function (h) { const i = def.headers.indexOf(h); return i >= 0 ? r[i] : ''; }); });
     sh.getRange(2, 1, out.length, head.length).setValues(out);
   }
   props.setProperty('STAGES_VERSION', '3');
@@ -2967,7 +2998,7 @@ function confirmScope_(user, p) {
   return withLock_(function () {
     const pr = readTable_('Projects').filter(function (x) { return x.project_id === p.project_id; })[0];
     if (!pr) throw new Error('Project ' + p.project_id + ' does not exist.');
-    if (!user.isAdmin && user.roles.indexOf('manager') < 0) throw new Error('Chris (manager) confirms the scope.');
+    if (!user.isAdmin && user.roles.indexOf('manager') < 0) throw new Error(roleNames_('manager', 'The manager') + ' (manager) confirms the scope.');
     const scope = clean_(p.scope, 4000), materials = clean_(p.materials, 4000);
     if (!scope) throw new Error('Write what needs to be done.');
     updateRecord_('Projects', 'project_id', pr.project_id, { scope: scope, materials: materials, scope_by: user.email, scope_at: new Date() });
@@ -3702,4 +3733,159 @@ function proposalAdd_(user, p) {
     audit_(user.email, 'proposal.add', rec.proposal_id, customer + ' · ' + rec.kind);
     return { proposal: isoRow_(rec) };
   });
+}
+
+
+// ═════════════════════════════ Company profile (everything that used to name one company) ═════════════════════════════
+
+function companyName_() { return String(getSettings_().COMPANY_NAME || '').trim() || 'the company'; }
+function oaName_() {
+  const s = getSettings_();
+  const oa = String(s.OA_NAME || '').trim();
+  if (oa) return oa;
+  const c = String(s.COMPANY_NAME || '').trim();
+  return c ? c + ' OA' : 'OA';
+}
+/** 1234.5 → "$1,234.50" (symbol from CURRENCY) for text the backend writes into task titles. */
+function moneyText_(n) {
+  const cur = String(getSettings_().CURRENCY || 'CAD').trim().toUpperCase();
+  const sym = { CAD: '$', USD: '$', AUD: '$', NZD: '$', EUR: '€', GBP: '£', CNY: '¥', JPY: '¥', HKD: 'HK$' }[cur] || cur + ' ';
+  return sym + Number(n || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+function taxName_() { return String(getSettings_().TAX_NAME || '').trim() || 'tax'; }
+/** The owner's first name for help text: ADMIN_NAME, else the admin's display name in Users, else "the owner". */
+function adminName_() {
+  const s = getSettings_();
+  if (String(s.ADMIN_NAME || '').trim()) return String(s.ADMIN_NAME).trim();
+  const u = readTable_('Users').filter(function (x) { return norm_(x.email) === norm_(s.ADMIN_EMAIL) || String(x.role_ids).split(',').map(function (r) { return r.trim(); }).indexOf('admin') >= 0; })[0];
+  return u && u.display_name ? String(u.display_name) : 'the owner';
+}
+/** "Chris" for manager, "Kyle" for office … from the active Users (several → "A / B"); fallback when nobody has it. */
+function roleNames_(role, fallback) {
+  const names = readTable_('Users').filter(function (u) {
+    return isTrue_(u.active) && String(u.role_ids).split(',').map(function (r) { return r.trim(); }).indexOf(role) >= 0;
+  }).map(function (u) { return String(u.display_name || u.email); }).filter(String);
+  return names.length ? names.join(' / ') : (fallback || role);
+}
+/** The mailbox with this purpose (blank = the first one). */
+function mailboxFor_(purpose) {
+  const boxes = readTable_('Mailboxes').filter(function (b) { return b.mailbox; });
+  const hit = purpose ? boxes.filter(function (b) { return norm_(b.purpose) === norm_(purpose); })[0] : boxes[0];
+  return hit ? norm_(hit.mailbox) : '';
+}
+/** What the web page needs to word things for this company. */
+function companyProfile_() {
+  const s = getSettings_();
+  const roles = {};
+  readTable_('Roles').forEach(function (r) { if (r.role_id) roles[r.role_id] = roleNames_(String(r.role_id), String(r.name || r.role_id)); });
+  return { name: companyName_(), oaName: oaName_(), domain: String(s.COMPANY_DOMAIN || '').trim(), phone: String(s.COMPANY_PHONE || '').trim(),
+           locale: String(s.LOCALE || '').trim() || 'en-CA', currency: String(s.CURRENCY || '').trim() || 'CAD', taxName: taxName_(),
+           regulator: String(s.REGULATOR_NAME || '').trim(), adminName: adminName_(), roleNames: roles };
+}
+/** Tokens in seed rows and README: {COMPANY} {OA_NAME} {REGULATOR} {REGULATOR_RE} {ADMIN_NAME} {TAX_NAME}. Other {…} are left alone. */
+function profile_() {
+  const s = getSettings_();
+  const reg = String(s.REGULATOR_NAME || '').trim();
+  return { COMPANY: companyName_(), OA_NAME: oaName_(), REGULATOR: reg, ADMIN_NAME: adminName_(), TAX_NAME: taxName_(),
+           REGULATOR_RE: reg ? reg.toLowerCase().replace(/[^a-z0-9 ]/g, '') + '|' : '' };
+}
+function fillTokens_(v, prof) {
+  if (typeof v !== 'string' || v.indexOf('{') < 0) return v;
+  return v.replace(/\{(COMPANY|OA_NAME|REGULATOR_RE|REGULATOR|ADMIN_NAME|TAX_NAME)\}/g, function (m, k) { return prof[k]; })
+    .replace(/ {2,}/g, ' ').replace(/^ | $/g, '');
+}
+function seedRows_(name) {
+  const prof = profile_();
+  return SEED[name].rows.map(function (r) { return r.map(function (v) { return fillTokens_(v, prof); }); });
+}
+
+/** An existing sheet from before the Company settings: fill them from what the sheet already knows. */
+function fillCompanyFromExisting_() {
+  const s = getSettings_();
+  if (String(s.COMPANY_NAME || '').trim() || readTable_('Users').length === 0) return;
+  const set = {};
+  let name = '';
+  try { if (s.ROOT_FOLDER_ID) { const n = DriveApp.getFolderById(s.ROOT_FOLDER_ID).getName(); if (typeof n === 'string') name = n; } } catch (e) { /* no access */ }
+  set.COMPANY_NAME = name || String(s.OA_NAME || '').replace(/\s+OA$/i, '').trim() || 'Company';
+  const boxes = readTable_('Mailboxes');
+  const pm = boxes.filter(function (b) { return norm_(b.purpose) === 'project manager'; })[0], sales = boxes.filter(function (b) { return norm_(b.purpose) === 'sales'; })[0];
+  if (pm && !s.MAILBOX_PM) set.MAILBOX_PM = norm_(pm.mailbox);
+  if (sales && !s.MAILBOX_SALES) set.MAILBOX_SALES = norm_(sales.mailbox);
+  const any = boxes.filter(function (b) { return b.mailbox; })[0];
+  if (any && !s.COMPANY_DOMAIN) set.COMPANY_DOMAIN = norm_(any.mailbox).split('@')[1] || '';
+  const admin = readTable_('Users').filter(function (u) { return norm_(u.email) === norm_(s.ADMIN_EMAIL); })[0];
+  if (admin && !s.ADMIN_NAME) set.ADMIN_NAME = String(admin.display_name || '');
+  const usesReg = readTable_('Project Stages').some(function (r) { return /\bTSSA\b/.test(String(r.stage)); });
+  if (usesReg && !s.REGULATOR_NAME) set.REGULATOR_NAME = 'TSSA';
+  writeSettings_(set);
+  Logger.log('Company settings filled from this sheet: ' + JSON.stringify(set) + ' — check COMPANY_NAME in Settings.');
+}
+function writeSettings_(set) {
+  const sh = SpreadsheetApp.getActive().getSheetByName('Settings');
+  const rows = readTable_('Settings');
+  Object.keys(set).forEach(function (k) {
+    const i = rows.findIndex(function (r) { return String(r.key).trim() === k; });
+    if (i >= 0) sh.getRange(i + 2, 2).setValue(set[k]);
+  });
+}
+function markRequiredSettings_(keys) {
+  const sh = SpreadsheetApp.getActive().getSheetByName('Settings');
+  readTable_('Settings').forEach(function (r, i) {
+    if (keys.indexOf(String(r.key).trim()) >= 0 && !String(r.value).trim()) sh.getRange(i + 2, 2).setBackground('#FFF2CC');
+  });
+}
+
+/** Second setup() run on a new sheet: the owner, the Drive folders, the segment folders. Skips whatever is already there. */
+function installCompany_() {
+  const s = getSettings_();
+  const set = {};
+  const me = norm_(Session.getEffectiveUser().getEmail());
+  if (!String(s.ADMIN_EMAIL || '').trim() && me) set.ADMIN_EMAIL = me;
+  const oa = oaName_();
+  let root = null, system = null;
+  if (!String(s.ROOT_FOLDER_ID || '').trim()) { root = DriveApp.createFolder(companyName_()); set.ROOT_FOLDER_ID = root.getId(); }
+  else root = DriveApp.getFolderById(s.ROOT_FOLDER_ID);
+  if (!String(s.SYSTEM_FOLDER_ID || '').trim()) { system = DriveApp.createFolder(oa + ' System'); set.SYSTEM_FOLDER_ID = system.getId(); }
+  else system = DriveApp.getFolderById(s.SYSTEM_FOLDER_ID);
+  if (!String(s.BACKUP_FOLDER_ID || '').trim()) set.BACKUP_FOLDER_ID = ensureFolder_(ensureFolder_(system, 'Backups'), 'Weekly').getId();
+  if (!String(s.INBOX_FOLDER_ID || '').trim()) set.INBOX_FOLDER_ID = ensureFolder_(root, '00_Inbox').getId();
+  writeSettings_(set);
+  // The owner is the first user.
+  const admin = norm_(set.ADMIN_EMAIL || s.ADMIN_EMAIL);
+  const users = SpreadsheetApp.getActive().getSheetByName('Users');
+  if (users && admin && !readTable_('Users').some(function (u) { return norm_(u.email) === admin; })) {
+    const head = headersOf_('Users');
+    users.appendRow(head.map(function (h) {
+      return ({ email: admin, display_name: String(s.ADMIN_NAME || '').trim() || admin.split('@')[0], role_ids: 'admin', active: true,
+                added_on: Utilities.formatDate(new Date(), tz_(), 'yyyy-MM-dd'), notes: 'Owner', on_calendar: false })[h];
+    }).map(function (v) { return v === undefined ? '' : v; }));
+  }
+  // Segment folders inside the company folder.
+  const seg = SpreadsheetApp.getActive().getSheetByName('Segments');
+  if (seg) {
+    const head = headersOf_('Segments');
+    readTable_('Segments').forEach(function (r, i) {
+      if (!String(r.folder_id || '').trim()) writeRowFields_(seg, head, i + 2, { folder_id: ensureFolder_(root, String(r.name || r.segment_id)).getId() });
+    });
+  }
+}
+
+/** MAILBOX_PM / MAILBOX_SALES → rows in Mailboxes (inactive until the owner installs the collector). */
+function addCompanyMailboxes_() {
+  const s = getSettings_();
+  const sh = SpreadsheetApp.getActive().getSheetByName('Mailboxes');
+  if (!sh) return;
+  const head = headersOf_('Mailboxes');
+  const have = readTable_('Mailboxes').map(function (b) { return norm_(b.mailbox); });
+  [[s.MAILBOX_PM, { purpose: 'project manager', follow_up_days: '', unanswered_days: 2, track_all_sent: false,
+                    note: 'Project manager box: customers we already work with. The OA flags emails left unanswered.' }],
+   [s.MAILBOX_SALES, { purpose: 'sales', follow_up_days: 7, unanswered_days: 2, track_all_sent: true,
+                       note: 'Sales box: quotes, follow-ups and outreach to new customers. The OA flags quotes with no reply after 7 days.' }]]
+    .forEach(function (x) {
+      const box = norm_(x[0]);
+      if (!box || have.indexOf(box) >= 0) return;
+      const rec = Object.assign({ mailbox: box, owner_name: '', key: '', active: false }, x[1]);
+      sh.appendRow(head.map(function (h) { return rec[h] === undefined ? '' : rec[h]; }));
+      have.push(box);
+    });
 }

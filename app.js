@@ -1,5 +1,6 @@
-/* Krysnor OA — web page (step 2: sign-in, service reports, offline outbox).
- * Data lives in Kaixin's private Google Sheet; this page only talks to the Apps Script API.
+/* OA — web page (sign-in, service reports, offline outbox, CRM …).
+ * Data lives in the owner's private Google Sheet; this page only talks to the Apps Script API.
+ * Company wording (name, locale, currency, tax, who holds each role) comes from the backend's Settings.
  * Offline: the last synced data is kept on the device; new reports wait in an outbox and
  * upload by themselves when the connection comes back. */
 (function () {
@@ -35,10 +36,19 @@
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const online = () => navigator.onLine;
   const can = (p) => !!(state.me && state.me.user && (state.me.user.isAdmin || state.me.user.permissions.indexOf(p) >= 0));
+  // Company wording from Settings (sent by the backend; sensible defaults until it arrives).
+  const CO = () => (state.work && state.work.company) || (state.data && state.data.company) || (state.me && state.me.company) || {};
+  const LOC = () => CO().locale || 'en-CA';
+  const CUR = () => CO().currency || 'CAD';
+  const TAX = () => CO().taxName || 'Tax';
+  const APP = () => CO().oaName || (state.me && state.me.oaName) || (window.OA_CONFIG && window.OA_CONFIG.appName) || 'OA';
+  const ROLE_DEFAULT = { manager: 'Manager', office: 'Office', technician: 'Technician', sales: 'Sales', admin: 'Admin', viewer: 'Viewer' };
+  const roleLabel = (r) => ((CO().roleNames || {})[r]) || ROLE_DEFAULT[r] || r;
+  const adminLabel = () => CO().adminName || 'the owner';
   const fmtDate = (v) => {
     if (!v) return '';
     const d = new Date(v); if (isNaN(d)) return String(v);
-    return d.toLocaleString('en-CA', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    return d.toLocaleString(LOC(), { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   };
   const ago = (v) => {
     if (!v) return 'never';
@@ -68,7 +78,7 @@
     open() {
       if (this._db) return Promise.resolve(this._db);
       return new Promise((res, rej) => {
-        const r = indexedDB.open('krysnor-oa', 2);
+        const r = indexedDB.open((window.OA_CONFIG && window.OA_CONFIG.storageName) || 'krysnor-oa', 2);
         r.onupgradeneeded = () => {
           const db = r.result;
           if (!db.objectStoreNames.contains('outbox')) db.createObjectStore('outbox', { keyPath: 'client_id' });
@@ -246,7 +256,7 @@
       chip.innerHTML = '<span class="avatar" style="background:' + esc(userColor(u.name)) + '">' +
         esc((u.name || '?').slice(0, 1)) + '</span>' + esc(u.name);
       $('#user-menu-text').textContent = u.email + ' · ' + u.roles.join(', ');
-      $('#oa-name').textContent = state.me.oaName || 'Krysnor OA';
+      $('#oa-name').textContent = APP(); document.title = APP();
     }
     renderSync();
   }
@@ -261,7 +271,7 @@
     b.classList.toggle('hot', n > 0);
     b.title = n ? n + ' open reminder' + (n > 1 ? 's' : '') : 'Notifications';
   }
-  const batchLabel = (b) => b ? new Date(b).toLocaleString('en-CA', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+  const batchLabel = (b) => b ? new Date(b).toLocaleString(LOC(), { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
   function noteCard(i, live) {
     const done = i.status === 'done';
     return '<div class="card note' + (done ? ' done' : '') + '" data-task="' + esc(i.task_id) + '">' +
@@ -322,8 +332,8 @@
 
   function renderSignIn() {
     view().innerHTML =
-      '<div class="signin"><h1>Krysnor OA</h1>' +
-      '<p class="muted">Sign in with the Google account Kaixin added for you. ' +
+      '<div class="signin"><h1>' + esc(APP()) + '</h1>' +
+      '<p class="muted">Sign in with the Google account your administrator added for you. ' +
       'After the first sign-in this page also works without signal.</p>' +
       '<div id="gbtn"></div><p class="muted" id="signin-note"></p></div>';
     const note = $('#signin-note');
@@ -904,16 +914,16 @@
     const anchor = state.week;
     const monthStart = new Date(anchor.getFullYear(), anchor.getMonth() + (anchor.getDate() > 22 ? 1 : 0), 1);
     const title = mode === 'month'
-      ? monthStart.toLocaleDateString('en-CA', { month: 'long', year: 'numeric' })
+      ? monthStart.toLocaleDateString(LOC(), { month: 'long', year: 'numeric' })
       : (() => { const end = new Date(anchor); end.setDate(anchor.getDate() + 6);
-          return anchor.toLocaleDateString('en-CA', { month: 'short', day: 'numeric' }) + ' – ' +
-                 end.toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' }); })();
+          return anchor.toLocaleDateString(LOC(), { month: 'short', day: 'numeric' }) + ' – ' +
+                 end.toLocaleDateString(LOC(), { month: 'short', day: 'numeric', year: 'numeric' }); })();
     const evBtn = (e) => '<button class="ev' + (e.past ? ' past' : '') + (e.oa ? ' oa' : '') + '" type="button" data-ev="' + esc(e.id) + '" style="--c:' + esc(personColor(e.person)) + '">' +
       '<b>' + esc(e.person) + '</b>' + esc(e.title) + '</button>';
     const todayIso = iso(new Date());
     let body = '';
     if (!entries.length) {
-      body = '<div class="empty">' + (state.index ? 'No calendar rows visible to you yet. Kaixin runs syncSources once to load them.' : 'Connect once to download the calendar.') + '</div>';
+      body = '<div class="empty">' + (state.index ? 'No calendar rows visible to you yet. ' + esc(adminLabel()) + ' runs syncSources once to load them.' : 'Connect once to download the calendar.') + '</div>';
     } else if (mode === 'month') {
       const first = mondayOf(monthStart);
       const cells = Array.from({ length: 42 }, (_, i) => { const d = new Date(first); d.setDate(first.getDate() + i); return d; });
@@ -931,13 +941,13 @@
       body = '<div class="cal-week">' + days.map((d) => {
         const list = byDay[iso(d)] || [];
         return '<div class="cal-col' + (iso(d) === todayIso ? ' today' : '') + (list.length ? '' : ' empty-day') + '">' +
-          '<div class="cal-head"><small>' + d.toLocaleDateString('en-CA', { weekday: 'short' }) + '</small><span class="daynum">' + d.getDate() + '</span></div>' +
+          '<div class="cal-head"><small>' + d.toLocaleDateString(LOC(), { weekday: 'short' }) + '</small><span class="daynum">' + d.getDate() + '</span></div>' +
           '<div class="cal-body">' + list.map(evBtn).join('') + '</div></div>';
       }).join('') + '</div>';
       const monthKey = iso(anchor).slice(0, 7);
       const due = items.filter((it) => /maintenance to be done/i.test(it.kind) && String(it.date).slice(0, 7) === monthKey);
       if (due.length) {
-        body += '<h2>Maintenance due in ' + esc(anchor.toLocaleDateString('en-CA', { month: 'long' })) + ' (' + due.length + ')</h2><div class="list">' +
+        body += '<h2>Maintenance due in ' + esc(anchor.toLocaleDateString(LOC(), { month: 'long' })) + ' (' + due.length + ')</h2><div class="list">' +
           due.map((it) => '<div class="card"><div class="card-top"><span class="chip">' + esc(it.kind.replace(/maintenance to be done/i, '').replace(/^\W+|\W+$/g, '') || 'Maintenance') + '</span>' +
             (/completed|done/i.test(it.text) ? '<span class="chip t-ok">Done</span>' : '') + '</div>' +
             '<div class="card-title">' + esc(it.addr) + '</div>' +
@@ -987,7 +997,7 @@
       const e = byId[b.dataset.ev]; if (!e) return;
       if (e.oa) { location.hash = e.url; return; }
       const related = e.key ? ((state.index && state.index.items) || []).filter((x) => x.key === e.key && x.id !== e.id).length : 0;
-      openDrawer(e.person + ' · ' + new Date(e.date + 'T12:00:00').toLocaleDateString('en-CA', { weekday: 'long', month: 'long', day: 'numeric' }),
+      openDrawer(e.person + ' · ' + new Date(e.date + 'T12:00:00').toLocaleDateString(LOC(), { weekday: 'long', month: 'long', day: 'numeric' }),
         '<div class="card-body" style="-webkit-line-clamp:unset;white-space:pre-wrap">' + esc(e.text) + '</div>' + contactLine(e) +
         (e.approx ? '<p class="muted">The day was not written in the maintenance record, so this sits on the 1st.</p>' : '') +
         '<div class="actions"><a class="btn" href="' + esc(e.url) + '" target="_blank" rel="noopener">Open in sheet</a>' +
@@ -1062,9 +1072,9 @@
   async function loadWorkFromDevice() {
     if (!state.work) { try { state.work = (await DB.getKv('work')) || null; } catch (e) { state.work = null; } }
   }
-  const dShort = (v) => { if (!v) return ''; const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? v + 'T12:00:00' : v); return isNaN(d) ? String(v) : d.toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' }); };
+  const dShort = (v) => { if (!v) return ''; const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? v + 'T12:00:00' : v); return isNaN(d) ? String(v) : d.toLocaleDateString(LOC(), { month: 'short', day: 'numeric', year: 'numeric' }); };
   const daysSince = (v) => Math.max(0, Math.floor((Date.now() - new Date(v).getTime()) / 86400000));
-  const moneyFmt = (v) => (v === '' || v === null || v === undefined || isNaN(Number(v))) ? '' : '$' + Number(v).toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const moneyFmt = (v) => { if (v === '' || v === null || v === undefined || isNaN(Number(v))) return ''; try { return Number(v).toLocaleString(LOC(), { style: 'currency', currency: CUR() }); } catch (e) { return '$' + Number(v).toFixed(2); } };
   const who = (email) => { const u = state.data && state.data.users; const n = String(email || '').split('@')[0]; return n ? n.charAt(0).toUpperCase() + n.slice(1) : ''; };
   const siteById = (id) => state.data && state.data.sites.find((s) => s.site_id === id);
   function siteOptions(selected) {
@@ -1152,13 +1162,14 @@
     drawMonth(mc);
   }
   function drawMonth(mc) {
-    const label = (ym) => new Date(ym + '-15T12:00:00').toLocaleDateString('en-CA', { month: 'long', year: 'numeric' });
+    const label = (ym) => new Date(ym + '-15T12:00:00').toLocaleDateString(LOC(), { month: 'long', year: 'numeric' });
     const maintAll = mc.items.filter((i) => i.type === 'Maintenance').sort((a, b) => a.address.localeCompare(b.address));
     const maint = maintAll.filter((i) => i.segment !== 'RES'), resMaint = maintAll.filter((i) => i.segment === 'RES');
     const resMail = mc.items.filter((i) => i.type === 'Residential email').sort((a, b) => a.address.localeCompare(b.address));
     const draft = (i) => {
       const t = mc.template || {}; const first = String(i.contact_name || '').split(/[\s,/&]+/)[0] || 'there';
-      const vars = { first_name: first, customer: i.contact_name || '', address: i.address, month: label(mc.month).split(' ')[0], package: i.package || '', frequency: String(i.frequency || '').toLowerCase() };
+      const vars = Object.assign({ company: CO().name || '', company_phone: CO().phone || '', send_from: mc.sendFrom || '', sender_name: roleLabel('office') }, mc.fill || {},
+        { first_name: first, customer: i.contact_name || '', address: i.address, month: label(mc.month).split(' ')[0], package: i.package || '', frequency: String(i.frequency || '').toLowerCase() });
       const fill = (x) => String(x || '').replace(/\{(\w+)\}/g, (m, k) => vars[k] !== undefined ? vars[k] : m);
       return { subject: fill(t.subject), body: fill(t.body) };
     };
@@ -1178,11 +1189,11 @@
     const hst = Number(mc.hst || 13);
     const total = inv.reduce((s, i) => s + (Number(i.amount) || 0), 0);
     const row = (i, isInv) => {
-      const subj = 'Krysnor Elevator – ' + label(mc.month).split(' ')[0] + ' maintenance invoice – ' + i.address;
+      const subj = (CO().name ? CO().name + ' – ' : '') + label(mc.month).split(' ')[0] + ' maintenance invoice – ' + i.address;
       return '<li class="check' + (i.status === 'done' ? ' is-done' : '') + '"><label><input type="checkbox" data-task="' + esc(i.task_id) + '"' + (i.status === 'done' ? ' checked' : '') + '>' +
         '<span><b>' + esc(i.address) + '</b>' +
         '<small>' + esc(i.frequency) + (i.due_months && i.frequency !== 'Monthly' ? ' · ' + esc(i.due_months) : '') +
-          (isInv && i.amount !== '' ? '<br><span class="mono">' + moneyFmt(i.amount) + ' + HST = ' + moneyFmt(Number(i.amount) * (1 + hst / 100)) + '</span>' : '') +
+          (isInv && i.amount !== '' ? '<br><span class="mono">' + moneyFmt(i.amount) + ' + ' + esc(TAX()) + ' = ' + moneyFmt(Number(i.amount) * (1 + hst / 100)) + '</span>' : '') +
           (i.status === 'done' ? '<br>✓ ' + esc(i.done_by === 'Maintenance Record' ? 'visit in the maintenance record' : who(i.done_by) + ' ' + dShort(i.done_at)) + te('Tasks', i.task_id, 'done_at', i.done_at) : '') + '</small></span></label>' +
         '<span class="check-links">' + (i.site_id ? '<a href="#/sites/' + encodeURIComponent(i.site_id) + '">History</a>' : '') +
           (isInv && i.contact_email ? '<a href="mailto:' + esc(i.contact_email) + '?subject=' + encodeURIComponent(subj) + '">Email ' + esc(i.contact_name || i.contact_email) + '</a>' : '') + '</span></li>';
@@ -1192,7 +1203,7 @@
       '<p class="muted">From the company Maintenance Record: commercial sites due this month (monthly, quarterly, semi-annual) and residential customers due this month. A visit written in the record ticks the visit lists by itself.</p>' +
       (mc.items.length ? '' : '<div class="empty">No maintenance list for your role this month.</div>') +
       (inv.length ? '<h2>Invoices to send · ' + doneN(inv) + ' of ' + inv.length + ' ' + bar(inv) + '</h2>' +
-        '<p class="muted mono">Total ' + moneyFmt(total) + ' + HST ' + hst + '% = ' + moneyFmt(total * (1 + hst / 100)) + '</p>' +
+        '<p class="muted mono">Total ' + moneyFmt(total) + ' + ' + esc(TAX()) + ' ' + hst + '% = ' + moneyFmt(total * (1 + hst / 100)) + '</p>' +
         '<ul class="checklist">' + inv.map((i) => row(i, true)).join('') + '</ul>' : '') +
       (maint.length ? '<h2>' + (resMaint.length ? 'Commercial maintenance' : 'Maintenance visits') + ' · ' + doneN(maint) + ' of ' + maint.length + ' done ' + bar(maint) + '</h2>' +
         '<ul class="checklist">' + maint.map((i) => row(i, false)).join('') + '</ul>' : '') +
@@ -1305,7 +1316,7 @@
         '<div class="row2"><label class="field" data-for="quote"><span>Quote #</span><input id="os-ref" type="text"></label>' +
         '<label class="field" data-for="ready"><span>Pickup / delivery date</span><input id="os-date" type="date"></label>' +
         '<label class="field" data-for="ready"><span>How</span><select id="os-how"><option>Pickup</option><option>Delivery</option></select></label></div>' +
-        '<label class="field"><span>Note</span><input id="os-note" type="text" placeholder="e.g. Chris approved; supplier says ready Thursday"></label>' +
+        '<label class="field"><span>Note</span><input id="os-note" type="text" placeholder="e.g. ' + esc(roleLabel('manager')) + ' approved; supplier says ready Thursday"></label>' +
         '<p class="muted" id="os-err" role="alert"></p><div class="actions"><button class="btn primary" type="submit">Save step</button>' +
         '<button class="btn ghost" type="button" id="os-noteonly">Add note only</button></div></form>' : '') +
       '<h2>Part prices · ' + prices.length + '</h2>' +
@@ -1409,7 +1420,7 @@
       return '<div class="pipe"><div class="pipe-h">' + esc(typeName(t).name) + '</div><ol>' + names.map((n) => {
         const c = open.filter((p) => p.type_id === t && p.stage === n).length;
         const st = (w.projectStages || []).find((s) => s.type_id === t && s.stage === n) || {};
-        const who = String(st.assign_roles || '').split(',').map((r) => ({ manager: 'Chris', office: 'Kyle', technician: 'Tech', sales: 'Sales', admin: 'Kaixin' })[r.trim()] || '').filter(Boolean).join('/');
+        const who = String(st.assign_roles || '').split(',').map((r) => r.trim() ? roleLabel(r.trim()) : '').filter(Boolean).join('/');
         return '<li class="' + (c ? 'has' : '') + (stepFilter === t + '|' + n ? ' on' : '') + '"><button type="button" data-step="' + esc(t + '|' + n) + '"' + (c ? '' : ' disabled') + '>' +
           '<b>' + (c || '') + '</b><span>' + esc(n) + '</span>' + (who ? '<small>' + esc(who) + (String(st.segments || 'ALL') !== 'ALL' ? ' · ' + esc(st.segments) : '') + '</small>' : '') + '</button></li>';
       }).join('') + '</ol></div>';
@@ -1516,7 +1527,7 @@
         '<p>' + esc(p.scope) + '</p>' + (p.materials ? '<h2>Materials</h2><p>' + esc(p.materials) + '</p>' : '') + '</div>' : '') +
       (can('project.edit') && p.status !== 'closed' ? '<h2>Next step</h2><form class="stack step-form" id="ps" novalidate><div class="row2">' +
         '<label class="field"><span>Step</span><select id="ps-stage">' + names.concat(['Lost / cancelled']).map((s, i) => '<option' + (i === Math.min(at + 1, names.length - 1) ? ' selected' : '') + '>' + esc(s) + '</option>').join('') + '</select></label>' +
-        '<label class="field"><span>Note</span><input id="ps-note" type="text" placeholder="e.g. quote $38,500 sent, Chris approved"></label></div>' +
+        '<label class="field"><span>Note</span><input id="ps-note" type="text" placeholder="e.g. quote $38,500 sent, ' + esc(roleLabel('manager')) + ' approved"></label></div>' +
         '<p class="muted" id="ps-err" role="alert"></p><div class="actions"><button class="btn primary" type="submit">Save step</button><button class="btn ghost" type="button" id="ps-noteonly">Add note only</button>' +
         (can('order.edit') ? '<a class="btn ghost" href="#/orders/new?project=' + encodeURIComponent(id) + (p.site_id ? '&site=' + encodeURIComponent(p.site_id) : '') + '">Order materials</a>' : '') + '</div></form>' : '') +
       planHtml(p) +
@@ -1543,7 +1554,7 @@
     }
   }
 
-  // ───────── Mail (records from Kyle's mailbox) ─────────
+  // ───────── Mail (records from the collected mailboxes) ─────────
   const MAIL_CATS = ['Quote', 'Order', 'Installation', 'Maintenance', 'Inspection', 'Invoice', 'Task'];
   function renderMail() {
     const w = W();
@@ -1560,7 +1571,7 @@
         return '<button type="button" class="fchip' + (c === cat ? ' on' : '') + '" data-cat="' + esc(c) + '">' + esc(c || 'All') + ' <small>' + n + '</small></button>'; }).join('') +
         '<select id="ml-st" aria-label="Status"><option value="open"' + (st === 'open' ? ' selected' : '') + '>Not ignored</option><option value="new"' + (st === 'new' ? ' selected' : '') + '>Not filed yet</option>' +
         '<option value="linked"' + (st === 'linked' ? ' selected' : '') + '>Filed</option><option value="ignored"' + (st === 'ignored' ? ' selected' : '') + '>Ignored</option><option value="all"' + (st === 'all' ? ' selected' : '') + '>All</option></select></div>' +
-      (list.length ? '<div class="list">' + list.slice(0, 200).map(mailRow).join('') + '</div>' : '<div class="empty">' + (w.mail.length ? 'Nothing matches.' : 'No emails yet. They appear here once the collector runs in Kyle\'s account.') + '</div>');
+      (list.length ? '<div class="list">' + list.slice(0, 200).map(mailRow).join('') + '</div>' : '<div class="empty">' + (w.mail.length ? 'Nothing matches.' : 'No emails yet. They appear here once the collector runs in the mailbox owner\'s account.') + '</div>');
     bindMailCards(view());
     bindProposals();
     view().querySelectorAll('[data-cat]').forEach((b) => b.addEventListener('click', () => { state.mailCat = b.dataset.cat; renderMail(); }));
@@ -1691,14 +1702,14 @@
       .sort((a, b) => st === 'sent' ? String(b.done_at).localeCompare(String(a.done_at)) : String(a.created_at || '9').localeCompare(String(b.created_at || '9')));
     const sum = (l) => l.reduce((s, i) => s + (Number(i.amount) || 0), 0);
     const notSent = all.filter((i) => i.status === 'not sent'), sentMonth = all.filter((i) => i.status === 'sent' && String(i.done_at).slice(0, 7) === new Date().toISOString().slice(0, 7));
-    const tile = (label, l, extra) => '<div class="tile"><span>' + label + '</span><b>' + l.length + '</b><small class="mono">' + (sum(l) ? moneyFmt(sum(l)) + ' + HST' : '&nbsp;') + '</small>' + (extra || '') + '</div>';
+    const tile = (label, l, extra) => '<div class="tile"><span>' + label + '</span><b>' + l.length + '</b><small class="mono">' + (sum(l) ? moneyFmt(sum(l)) + ' + ' + esc(TAX()) : '&nbsp;') + '</small>' + (extra || '') + '</div>';
     view().innerHTML = '<div class="page-head"><h1>Invoices</h1></div>' +
       '<div class="tiles">' + tile('Not sent yet', notSent) + tile('Sent this month', sentMonth) + tile('Coming up (projects)', all.filter((i) => i.status === 'upcoming')) + '</div>' +
       '<div class="toolbar"><input id="iv-q" type="search" placeholder="Address, report, invoice #…" value="' + esc(state.invQ || '') + '" aria-label="Search invoices">' +
       '<div class="seg" role="group" aria-label="Status">' + [['not sent', 'Not sent'], ['sent', 'Sent'], ['upcoming', 'Coming up'], ['all', 'All']].map((x) =>
         '<button type="button" data-ist="' + x[0] + '" class="' + (st === x[0] ? 'on' : '') + '">' + x[1] + ' <small>' + (x[0] === 'all' ? all.length : all.filter((i) => i.status === x[0]).length) + '</small></button>').join('') + '</div></div>' +
       '<div class="chips-row">' + [''].concat(INV_KINDS).map((k) => '<button type="button" class="fchip' + (k === kind ? ' on' : '') + '" data-ik="' + esc(k) + '">' + esc(k || 'All kinds') + '</button>').join('') + '</div>' +
-      (list.length ? '<p class="muted mono">' + list.length + ' shown' + (sum(list) ? ' · ' + moneyFmt(sum(list)) + ' + HST ' + hst + '% = ' + moneyFmt(sum(list) * (1 + hst / 100)) : '') + '</p>' +
+      (list.length ? '<p class="muted mono">' + list.length + ' shown' + (sum(list) ? ' · ' + moneyFmt(sum(list)) + ' + ' + esc(TAX()) + ' ' + hst + '% = ' + moneyFmt(sum(list) * (1 + hst / 100)) : '') + '</p>' +
         '<ul class="checklist">' + list.map((i) => '<li class="check' + (i.status === 'sent' ? ' is-done' : '') + '">' +
           '<label>' + (i.status === 'upcoming' ? '<span class="upcoming-dot" aria-hidden="true">◷</span>' : '<input type="checkbox" data-inv="' + esc(i.task_id) + '"' + (i.status === 'sent' ? ' checked' : '') + '>') +
           '<span><b>' + esc(i.title) + '</b><small><span class="chip">' + esc(i.kind) + '</span> ' +
@@ -1750,17 +1761,17 @@
     };
     return '<h2>Invoicing</h2>' + (parts.length ? '<ul class="checklist plan">' + parts.map(row).join('') + '</ul>' : '<p class="muted">No invoice split set yet.</p>') +
       (can('project.edit') && p.status !== 'closed' ? '<details class="add-site"><summary class="btn">' + (parts.length ? 'Change split' : 'Set invoice split') + '</summary>' +
-        '<form class="stack" id="plf" novalidate><label class="field"><span>Project value (before HST)</span><input id="pl-value" type="text" inputmode="decimal" value="' + esc(p.value || '') + '"></label>' +
+        '<form class="stack" id="plf" novalidate><label class="field"><span>Project value (before ' + esc(TAX()) + ')</span><input id="pl-value" type="text" inputmode="decimal" value="' + esc(p.value || '') + '"></label>' +
         '<label class="field"><span>Split</span><select id="pl-preset">' + presets.map((x) => '<option value="' + esc(x[1]) + '">' + esc(x[0]) + '</option>').join('') + '<option value="">Custom</option></select></label>' +
         '<div id="pl-parts"></div><div class="actions"><button class="btn ghost" type="button" id="pl-more">+ Part</button></div>' +
         '<p class="muted" id="pl-err" role="alert"></p><div class="actions"><button class="btn primary" type="submit">Save split</button></div></form></details>' : '');
   }
-  /** The current step's checkbox (or Chris's scope form) on the project page. */
+  /** The current step's checkbox (or the manager's scope form) on the project page. */
   const hasRole = (roles) => isAdmin() || String(roles || '').split(',').some((r) => ((state.me && state.me.user.roles) || []).indexOf(r.trim()) >= 0);
   function stepBoxHtml(p, cur) {
     if (!cur || p.status === 'closed' || !String(cur.assign_roles || '').trim()) return '';
     const mine = hasRole(cur.assign_roles);
-    const whoFor = String(cur.assign_roles).split(',').map((r) => ({ manager: 'Chris', office: 'Kyle', technician: 'the technician', admin: 'Kaixin', sales: 'Sales' })[r.trim()] || r).join(' / ');
+    const whoFor = String(cur.assign_roles).split(',').map((r) => roleLabel(r.trim())).join(' / ');
     const choices = String(cur.next || '').split('|').map((x) => x.trim()).filter(Boolean).map((x) => { const m = x.split(/\s*(?:→|->)\s*/); return { label: m[0], stage: (m[1] || m[0]).trim() }; });
     if (choices.length && String(cur.form) !== 'scope') {
       if (!mine) return '<div class="step-box waiting">Now with ' + esc(whoFor) + ': ' + esc(cur.reminder || cur.stage) + '</div>';
@@ -1773,7 +1784,7 @@
       return '<form class="stack step-box" id="scf" novalidate><h2>' + esc(cur.reminder || cur.stage) + '</h2>' +
         '<label class="field"><span>What needs to be done</span><textarea id="sc-scope" required placeholder="e.g. Replace door operator board, adjust doors, test">' + esc(p.scope || '') + '</textarea></label>' +
         '<label class="field"><span>Materials needed</span><textarea id="sc-mat" placeholder="e.g. GAL MOVFR board x1, door gibs x8">' + esc(p.materials || '') + '</textarea></label>' +
-        '<p class="muted" id="sc-err" role="alert"></p><div class="actions"><button class="btn primary" type="submit">Confirm and send to Kyle</button></div></form>';
+        '<p class="muted" id="sc-err" role="alert"></p><div class="actions"><button class="btn primary" type="submit">Confirm and send to ' + esc(roleLabel('office')) + '</button></div></form>';
     }
     if (!mine) return '<div class="step-box waiting">Now with ' + esc(whoFor) + ': ' + esc(cur.reminder || cur.stage) + '</div>';
     return '<div class="step-box"><label class="bigcheck"><input type="checkbox" id="step-done"><span><b>' + esc(cur.reminder || cur.stage) + '</b>' +
@@ -1785,7 +1796,7 @@
     if (sc) sc.addEventListener('submit', async (e) => {
       e.preventDefault(); const err = $('#sc-err'); err.textContent = '';
       try { await api('confirmScope', { project_id: p.project_id, scope: $('#sc-scope').value, materials: $('#sc-mat').value });
-            await loadWork(); loadNotes(); toast('Sent to Kyle'); renderProject(p.project_id); }
+            await loadWork(); loadNotes(); toast('Sent to ' + roleLabel('office')); renderProject(p.project_id); }
       catch (ex) { err.textContent = ex.message; }
     });
     view().querySelectorAll('[data-choice]').forEach((b) => b.addEventListener('click', async () => {
@@ -2123,7 +2134,7 @@
     if (!items.length) return '<div class="empty">No activity yet. Notes, deal steps and service reports at linked sites show here.</div>';
     let month = '';
     return '<ol class="crm-tl">' + items.map((it) => {
-      const d = new Date(it.at); const m = isNaN(d) ? '' : d.toLocaleDateString('en-CA', { month: 'long', year: 'numeric' });
+      const d = new Date(it.at); const m = isNaN(d) ? '' : d.toLocaleDateString(LOC(), { month: 'long', year: 'numeric' });
       const head = m !== month ? (month = m, '<li class="tl-month">' + esc(m) + '</li>') : '';
       return head + '<li class="tl-item"><div class="tl-h"><b>' + esc(it.kind) + '</b><span class="muted">' + (it.who ? 'by ' + esc(whoName(it.who)) + ' · ' : '') + esc(fmtDate(it.at)) + '</span></div>' + it.html + '</li>';
     }).join('') + '</ol>';
@@ -2300,7 +2311,7 @@
                 '<td>' + (ct ? '<a href="#/crm/contact/' + encodeURIComponent(ct.contact_id) + '">' + esc(ctName(ct)) + '</a>' : '') + '</td>' +
                 '<td>' + esc(ownerName(p.owner_email)) + '</td><td class="nowrap">' + esc(dShort(p.created_at)) + '</td></tr>'; }).join('')
               : '<tr><td colspan="7" class="crm-none">No deals in this pipeline.</td></tr>') + '</tbody></table></div>') +
-      '<p class="muted small">Deals are the OA projects. Open one to move it to the next step — the step owners and Chris’s scope rules still apply.</p>';
+      '<p class="muted small">Deals are the OA projects. Open one to move it to the next step — the step owners and the manager’s scope rule still apply.</p>';
     const again = () => { saveCrmView(); renderCrmDeals(); };
     $('#d-type').addEventListener('change', (e) => { v.type = e.target.value; again(); });
     $('#d-owner').addEventListener('change', (e) => { v.owner = e.target.value; again(); });
@@ -2376,6 +2387,7 @@
   // Pick up the 9:00 list without a reload (checks every 15 minutes while the page is open).
   setInterval(() => { if (state.me && online() && tokenValid()) loadNotes(); }, 15 * 60000);
 
+  document.title = APP(); { const on = $('#oa-name'); if (on) on.textContent = APP(); }
   if ('serviceWorker' in navigator) {
     const hadController = !!navigator.serviceWorker.controller;
     let reloaded = false;
